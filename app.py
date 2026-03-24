@@ -3,54 +3,83 @@ import hashlib
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 
-from langchain_community.document_loaders import GitLoader
+from langchain_community.document_loaders import GithubFileLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_openai import OpenAIEmbeddings, ChatOpenAI
-from langchain_community.vectorstores import FAISS
-from langchain.chains import RetrievalQA
-from pymongo import MongoClient
+from langchain_openai import ChatOpenAI
+from langchain.prompts import PromptTemplate
+from pymongo import MongoClient, UpdateOne
 from langchain_mongodb import MongoDBAtlasVectorSearch
 from langchain_openai import OpenAIEmbeddings
-from flask_socketio import SocketIO, send, emit
+from langchain.schema import HumanMessage
+from openai import OpenAI
 load_dotenv()
 
 app = Flask("Github-Repo-Analysis-Bot")
-# socketio = SocketIO(app, async_mode='eventlet')
-VECTOR_DIR = "vectorstores"
-# eventlet.monkey_patch()
-os.makedirs(VECTOR_DIR, exist_ok=True)
-
-embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+model = "text-embedding-3-small"
+openai_client = OpenAI()
 client = MongoClient(os.getenv("MONGODB_CONNECTION_STRING"))
 collection = client[os.getenv("MONGODB_DB_NAME")][os.getenv("MONGODB_COLLECTION_NAME")]
-vector_store = MongoDBAtlasVectorSearch(
-    collection=collection,
-    embedding=embeddings,
-    index_name="vector_index"
-)
+
 qa_chain = None
-repo_chains = {}
+llm = ChatOpenAI(
+        model="gpt-5-mini-2025-08-07",
+        api_key=os.getenv("OPENAI_API_KEY")
+    )
+K= 3
 def get_repo_id(repo_url):
-    return hashlib.md5(repo_url.encode()).hexdigest()
+    return repo_url.replace("https://github.com/", "").replace(".git", "")
+
+def hash_text(text):
+    return hashlib.md5(text.encode()).hexdigest()
+
+def get_embedding(text):
+   """Generates vector embeddings for the given text."""
+   embedding = openai_client.embeddings.create(input = text, model=model).data[0].embedding
+   return embedding
+
+def create_docs_with_embeddings(embeddings, docs, repo_id):
+    mongo_docs = []
+
+    for embedding, doc in zip(embeddings, docs):
+        text = doc.page_content
+        doc_id = f"{repo_id}_{hash_text(text)}"
+
+        mongo_docs.append({
+            "_id": doc_id,
+            "text": text,
+            "embedding": embedding,
+            "metadata": {
+                "repo": repo_id,
+                "source": doc.metadata.get("source")
+            }
+        })
+
+    return mongo_docs
 
 
+def upsert_documents(docs):
+    operations = [
+        UpdateOne(
+            {"_id": doc["_id"]},
+            {"$set": doc},
+            upsert=True
+        )
+        for doc in docs
+    ]
+
+    if operations:
+        collection.bulk_write(operations)
 def ingest_repo(repo_url):
     repo_id = get_repo_id(repo_url)
-    repo_path = f"./repos/{repo_id}"
-    db_path = f"{VECTOR_DIR}/{repo_id}"
-
-    # If already processed → load it
-    if os.path.exists(db_path):
-        print("Loading cached vector DB...")
-        db = FAISS.load_local(db_path, embeddings, allow_dangerous_deserialization=True)
-        return db
-
-    print("Cloning and processing repo...")
-
-    loader = GitLoader(
-        clone_url=repo_url,
-        repo_path=repo_path,
+    parts = repo_url.replace("https://github.com/", "").replace(".git", "")
+    loader = GithubFileLoader(
+        repo=parts,
         branch="main",
+        access_token=os.getenv("GITHUB_ACCESS_TOKEN"),
+        github_api_url="https://api.github.com",
+        file_filter=lambda file_path: any(
+            file_path.endswith(ext) for ext in {".md", ".py", ".js", ".ts", ".txt", ".json"}
+        )
     )
     documents = loader.load()
 
@@ -59,12 +88,23 @@ def ingest_repo(repo_url):
         chunk_overlap=200
     )
     docs = splitter.split_documents(documents)
+    texts = [doc.page_content for doc in docs]
+    response = openai_client.embeddings.create(
+        input=texts,
+        model=model
+    )
 
-    vector_store.add_documents(docs)
+    embeddings = [item.embedding for item in response.data]
 
-    return db
+    mongo_docs = create_docs_with_embeddings(
+        embeddings,
+        docs,
+        repo_id=repo_id
+    )
+    print(mongo_docs)
+    upsert_documents(mongo_docs)
 
-
+    
 @app.route("/load_repo", methods=["POST"])
 def load_repo():
     global qa_chain
@@ -76,18 +116,8 @@ def load_repo():
         return jsonify({"error": "No repo_url provided"}), 400
 
     try:
-        db = ingest_repo(repo_url)
-    
-        llm = ChatOpenAI(
-            model="gpt-5-mini-2025-08-07",
-            api_key=os.getenv("OPENAI_API_KEY")
-        )
-        qa_chain = RetrievalQA.from_chain_type(
-            llm,
-            retriever=db.as_retriever()
-        )
-        repo_id = get_repo_id(repo_url)
-        repo_chains[repo_id] = qa_chain
+        ingest_repo(repo_url)
+        
         return jsonify({
             "status": "success",
             "message": "Repo loaded and ready"
@@ -99,34 +129,65 @@ def load_repo():
 
 @app.route("/ask", methods=["POST"])
 def ask():
-    global qa_chain
+    data = request.json
     repo_url = data.get("repo_url")
     question = data.get("question")
 
-    if qa_chain is None:
-        return jsonify({"error": "No repo loaded yet"}), 400
+    if not repo_url or not question:
+        return jsonify({"error": "Missing repo_url or question"}), 400
 
-    data = request.json
-    question = data.get("question")
-
-    if not question:
-        return jsonify({"error": "No question provided"}), 400
     repo_id = get_repo_id(repo_url)
-    qa_chain = repo_chains.get(repo_id)
-    if not qa_chain:
-        return jsonify({"error": "Repo not loaded yet"}), 400
 
-    answer = qa_chain.run(question)
 
-    return jsonify({
-        "question": question,
-        "answer": answer
-    })
-# @socketio.on('message')
-# def handle_message(msg):
-#     print('Message: ' + msg)
-#     send(msg, broadcast=False)
+    existing_docs = collection.count_documents({"metadata.repo": repo_id})
+    if existing_docs == 0:
+        return jsonify({"error": "No documents found for this repo. Please load it first."}), 400
+
+
+    query_embedding = get_embedding(question)
+    
+    results = list(collection.aggregate([
+        {
+            "$vectorSearch": {
+                "index": "vectorSearch",
+                "queryVector": query_embedding,
+                "path": "embedding",
+                "numCandidates": 100,
+                "limit": K
+            }
+        },
+        {
+            "$match": {
+                "metadata.repo": repo_id
+            }
+        }
+    ]))
+
+    if not results:
+        return jsonify({"error": "No relevant documents found for this query."}), 404
+
+    context = "\n\n".join([doc["text"] for doc in results])
+
+    custom_prompt = PromptTemplate(
+        template="""You are a code assistant. Context from repository:
+{context}
+
+Question: {question}
+Answer:""",
+        input_variables=["context", "question"]
+    )
+
+    context = "\n\n".join([doc["text"] for doc in results])
+
+    prompt_text = custom_prompt.format(context=context, question=question)
+
+    llm_response = llm([HumanMessage(content=prompt_text)])
+
+
+    answer = llm_response[0].content if isinstance(llm_response, list) else llm_response.content
+
+    return jsonify({"question": question, "answer": answer})
+
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
-    # socketio.run(app)
