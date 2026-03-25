@@ -2,7 +2,6 @@ import os
 import hashlib
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
-
 from langchain_community.document_loaders import GithubFileLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_openai import ChatOpenAI
@@ -11,6 +10,7 @@ from pymongo import MongoClient, UpdateOne
 from langchain_mongodb import MongoDBAtlasVectorSearch
 from langchain_openai import OpenAIEmbeddings
 from langchain.schema import HumanMessage
+from github import GHClient
 from openai import OpenAI
 load_dotenv()
 
@@ -20,7 +20,7 @@ openai_client = OpenAI()
 client = MongoClient(os.getenv("MONGODB_CONNECTION_STRING"))
 collection = client[os.getenv("MONGODB_DB_NAME")][os.getenv("MONGODB_COLLECTION_NAME")]
 
-qa_chain = None
+
 llm = ChatOpenAI(
         model="gpt-5-mini-2025-08-07",
         api_key=os.getenv("OPENAI_API_KEY")
@@ -71,7 +71,20 @@ def upsert_documents(docs):
         collection.bulk_write(operations)
 def ingest_repo(repo_url):
     repo_id = get_repo_id(repo_url)
-    parts = repo_url.replace("https://github.com/", "").replace(".git", "")
+    parts = repo_id
+
+    # Initialize GitHub client
+    g = GHClient(token=os.getenv("GITHUB_ACCESS_TOKEN"))
+    repo = g.get_repo(repo=parts)
+    latest_sha = repo.get_branch("main").commit.sha
+
+    # Check SHA to skip ingestion if unchanged
+    existing_sha_doc = sha_collection.find_one({"repo": repo_id})
+    if existing_sha_doc and existing_sha_doc.get("sha") == latest_sha:
+        print(f"No updates found for {repo_id}, skipping ingestion.")
+        return {"status": "up-to-date"}
+
+    # Load repo files
     loader = GithubFileLoader(
         repo=parts,
         branch="main",
@@ -88,23 +101,39 @@ def ingest_repo(repo_url):
         chunk_overlap=200
     )
     docs = splitter.split_documents(documents)
+
+    # Generate embeddings
     texts = [doc.page_content for doc in docs]
     response = openai_client.embeddings.create(
         input=texts,
         model=model
     )
-
     embeddings = [item.embedding for item in response.data]
 
-    mongo_docs = create_docs_with_embeddings(
-        embeddings,
-        docs,
-        repo_id=repo_id
-    )
-    print(mongo_docs)
-    upsert_documents(mongo_docs)
+    # Prepare MongoDB docs
+    mongo_docs = create_docs_with_embeddings(embeddings, docs, repo_id)
 
-    
+    # --- Automatic removal of deleted files ---
+    current_doc_ids = {doc["_id"] for doc in mongo_docs}
+    existing_doc_ids = {doc["_id"] for doc in collection.find({"metadata.repo": repo_id}, {"_id": 1})}
+    deleted_doc_ids = existing_doc_ids - current_doc_ids
+
+    if deleted_doc_ids:
+        collection.delete_many({"_id": {"$in": list(deleted_doc_ids)}})
+        print(f"Deleted {len(deleted_doc_ids)} removed chunks for {repo_id}.")
+
+    # Upsert new/updated chunks
+    upsert_documents(mongo_docs)
+    print(f"Ingested/updated {len(mongo_docs)} chunks for {repo_id}.")
+
+    # Update SHA
+    sha_collection.update_one(
+        {"repo": repo_id},
+        {"$set": {"sha": latest_sha}},
+        upsert=True
+    )
+
+    return {"status": "success"}
 @app.route("/load_repo", methods=["POST"])
 def load_repo():
     global qa_chain
