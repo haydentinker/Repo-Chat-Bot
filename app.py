@@ -1,6 +1,8 @@
 import os
 import hashlib
-from flask import Flask, request, jsonify
+from flask import Flask, session,request, jsonify, redirect, url_for
+from flask_dance.contrib.github import make_github_blueprint, github
+from flask_dance.consumer import oauth_authorized
 from dotenv import load_dotenv
 from langchain_community.document_loaders import GithubFileLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -9,20 +11,66 @@ from pymongo import MongoClient, UpdateOne
 from langchain_core.messages import HumanMessage
 from openai import OpenAI
 from agents.ragAgent import ragAgent
+from middleware.authentication import set_up_auth_middleware
+
 load_dotenv()
 
+
 app = Flask("Github-Repo-Analysis-Bot")
+app.secret_key = os.getenv("FLASK_APP_SECRET")
+app.config["MONGO_URI"] = os.getenv("MONGODB_CONNECTION_STRING")
+
+blueprint = make_github_blueprint(
+    client_id=os.getenv("GITHUB_OAUTH_CLIENT_ID"),
+    client_secret=os.getenv("GITHUB_OAUTH_CLIENT_SECRET"),
+    scope="repo"
+)
+app.register_blueprint(blueprint, url_prefix="/login")
+
+
+
 model = "text-embedding-3-small"
 openai_client = OpenAI()
-client = MongoClient(os.getenv("MONGODB_CONNECTION_STRING"))
-collection = client[os.getenv("MONGODB_DB_NAME")][os.getenv("MONGODB_COLLECTION_NAME")]
+mongo_client = MongoClient(os.getenv("MONGODB_CONNECTION_STRING"))
+collection = mongo_client[os.getenv("MONGODB_DB_NAME")][os.getenv("MONGODB_COLLECTION_NAME")]
+users_collection = mongo_client[os.getenv("MONGODB_DB_NAME")]["users"]
+
+set_up_auth_middleware(app, users_collection)
 
 
-llm = ChatOpenAI(
-        model="gpt-5-mini-2025-08-07",
-        api_key=os.getenv("OPENAI_API_KEY")
-    )
-K= 3
+@oauth_authorized.connect_via(blueprint)
+def github_logged_in(blueprint, token):
+    if not token:
+        return False
+    
+    resp = blueprint.session.get("/user")
+    if not resp.ok:
+        return False
+    
+    github_info = resp.json()
+    github_user_id = str(github_info["id"])
+
+    user = users_collection.find_one({"github_id": github_user_id})
+    if not user:
+        new_user = {
+            "github_id": github_user_id,
+            "username": github_info["login"],
+            "email": github_info.get("email"),
+        }
+        users_collection.insert_one(new_user)
+    
+    session["user_id"] = github_user_id
+
+@app.route("/users/repos", methods=["GET"])
+def list_repos():
+    
+    resp = github.get("/user/repos")
+    if not resp.ok:
+        return "Error fetching repos", 500
+        
+    repos = resp.json() # List of repo objects
+    return {"repos": repos}
+
 def get_repo_id(repo_url):
     return repo_url.replace("https://github.com/", "").replace(".git", "")
 
