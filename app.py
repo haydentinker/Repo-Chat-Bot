@@ -3,15 +3,12 @@ import hashlib
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 from langchain_community.document_loaders import GithubFileLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_openai import ChatOpenAI
-from langchain.prompts import PromptTemplate
 from pymongo import MongoClient, UpdateOne
-from langchain_mongodb import MongoDBAtlasVectorSearch
-from langchain_openai import OpenAIEmbeddings
-from langchain.schema import HumanMessage
-from github import GHClient
+from langchain_core.messages import HumanMessage
 from openai import OpenAI
+from agents.ragAgent import ragAgent
 load_dotenv()
 
 app = Flask("Github-Repo-Analysis-Bot")
@@ -73,18 +70,6 @@ def ingest_repo(repo_url):
     repo_id = get_repo_id(repo_url)
     parts = repo_id
 
-    # Initialize GitHub client
-    g = GHClient(token=os.getenv("GITHUB_ACCESS_TOKEN"))
-    repo = g.get_repo(repo=parts)
-    latest_sha = repo.get_branch("main").commit.sha
-
-    # Check SHA to skip ingestion if unchanged
-    existing_sha_doc = sha_collection.find_one({"repo": repo_id})
-    if existing_sha_doc and existing_sha_doc.get("sha") == latest_sha:
-        print(f"No updates found for {repo_id}, skipping ingestion.")
-        return {"status": "up-to-date"}
-
-    # Load repo files
     loader = GithubFileLoader(
         repo=parts,
         branch="main",
@@ -101,8 +86,6 @@ def ingest_repo(repo_url):
         chunk_overlap=200
     )
     docs = splitter.split_documents(documents)
-
-    # Generate embeddings
     texts = [doc.page_content for doc in docs]
     response = openai_client.embeddings.create(
         input=texts,
@@ -110,10 +93,10 @@ def ingest_repo(repo_url):
     )
     embeddings = [item.embedding for item in response.data]
 
-    # Prepare MongoDB docs
+
     mongo_docs = create_docs_with_embeddings(embeddings, docs, repo_id)
 
-    # --- Automatic removal of deleted files ---
+   
     current_doc_ids = {doc["_id"] for doc in mongo_docs}
     existing_doc_ids = {doc["_id"] for doc in collection.find({"metadata.repo": repo_id}, {"_id": 1})}
     deleted_doc_ids = existing_doc_ids - current_doc_ids
@@ -122,22 +105,15 @@ def ingest_repo(repo_url):
         collection.delete_many({"_id": {"$in": list(deleted_doc_ids)}})
         print(f"Deleted {len(deleted_doc_ids)} removed chunks for {repo_id}.")
 
-    # Upsert new/updated chunks
+
     upsert_documents(mongo_docs)
     print(f"Ingested/updated {len(mongo_docs)} chunks for {repo_id}.")
 
-    # Update SHA
-    sha_collection.update_one(
-        {"repo": repo_id},
-        {"$set": {"sha": latest_sha}},
-        upsert=True
-    )
+
 
     return {"status": "success"}
 @app.route("/load_repo", methods=["POST"])
 def load_repo():
-    global qa_chain
-
     data = request.json
     repo_url = data.get("repo_url")
 
@@ -159,64 +135,19 @@ def load_repo():
 @app.route("/ask", methods=["POST"])
 def ask():
     data = request.json
-    repo_url = data.get("repo_url")
     question = data.get("question")
-
-    if not repo_url or not question:
-        return jsonify({"error": "Missing repo_url or question"}), 400
-
-    repo_id = get_repo_id(repo_url)
-
-
-    existing_docs = collection.count_documents({"metadata.repo": repo_id})
-    if existing_docs == 0:
-        return jsonify({"error": "No documents found for this repo. Please load it first."}), 400
-
-
-    query_embedding = get_embedding(question)
-    
-    results = list(collection.aggregate([
-        {
-            "$vectorSearch": {
-                "index": "vectorSearch",
-                "queryVector": query_embedding,
-                "path": "embedding",
-                "numCandidates": 100,
-                "limit": K
-            }
-        },
-        {
-            "$match": {
-                "metadata.repo": repo_id
-            }
-        }
-    ]))
-
-    if not results:
-        return jsonify({"error": "No relevant documents found for this query."}), 404
-
-    context = "\n\n".join([doc["text"] for doc in results])
-
-    custom_prompt = PromptTemplate(
-        template="""You are a code assistant. Context from repository:
-{context}
-
-Question: {question}
-Answer:""",
-        input_variables=["context", "question"]
+    repo_name = data.get("repo_name")
+    humanMessage = HumanMessage(content=question)
+    input= {
+        "messages": humanMessage,
+        "repo_name" : repo_name
+    }
+    response = ragAgent.invoke(
+    input,
+    {"configurable": {"thread_id": "2"}}
+   
     )
-
-    context = "\n\n".join([doc["text"] for doc in results])
-
-    prompt_text = custom_prompt.format(context=context, question=question)
-
-    llm_response = llm([HumanMessage(content=prompt_text)])
-
-
-    answer = llm_response[0].content if isinstance(llm_response, list) else llm_response.content
-
-    return jsonify({"question": question, "answer": answer})
-
+    return {"question": question , "response": response['messages'][-1].content}
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)

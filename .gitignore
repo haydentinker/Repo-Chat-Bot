@@ -1,16 +1,12 @@
 .env
 
-
-
 __pycache__/
 *.py[cod]
 *$py.class
 
-
 .venv/
 venv/
 env/
-
 
 .pytest_cache/
 .coverage
@@ -25,16 +21,9 @@ htmlcov/
 
 repo/
 
-vectorstore/
-*.faiss
-*.pkl
-*.db
-
 *.log
 
 instance/
 .webassets-cache
 
 .ipynb_checkpoints/
-
-*.sqlite3

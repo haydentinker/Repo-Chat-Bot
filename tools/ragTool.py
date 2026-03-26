@@ -1,9 +1,14 @@
 import os
-
+from typing import Annotated, List
+from langgraph.prebuilt import InjectedState
 from langchain.tools import tool
+from langchain_core.documents import Document
 from langchain_mongodb import MongoDBAtlasVectorSearch
 from langchain_openai import OpenAIEmbeddings
 from pymongo import MongoClient
+from dotenv import load_dotenv
+
+load_dotenv() 
 
 model = "text-embedding-3-small"
 
@@ -20,11 +25,11 @@ vector_store = MongoDBAtlasVectorSearch(
 )
 
 @tool
-def search_mongo(query: str, repo_name) -> str:
+def search_mongo(query: str, state: Annotated[dict, InjectedState] ) ->List[Document]:
     """Search the mongodb collection for repository information"""
-
+    repo_name = state.get("repo_name")
     pre_filter = {
-        "metadata.repo.name": {"$eq": repo_name}
+        "metadata.repo": {"$eq": repo_name}
     }
-    results = vector_store.similarity_search(query, pre_filter=pre_filter)
-    return results[0].page_content
+    return vector_store.similarity_search(query, pre_filter=pre_filter)
+   
