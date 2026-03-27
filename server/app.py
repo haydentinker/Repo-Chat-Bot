@@ -1,6 +1,8 @@
 import os
 import hashlib
-from flask import Flask, session,request, jsonify, redirect, url_for
+os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
+from flask import Flask, redirect, request, jsonify, make_response, session
+from flask_cors import CORS, cross_origin
 from flask_dance.contrib.github import make_github_blueprint, github
 from flask_dance.consumer import oauth_authorized
 from dotenv import load_dotenv
@@ -19,23 +21,27 @@ load_dotenv()
 app = Flask("Github-Repo-Analysis-Bot")
 app.secret_key = os.getenv("FLASK_APP_SECRET")
 app.config["MONGO_URI"] = os.getenv("MONGODB_CONNECTION_STRING")
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_SECURE"] = False
 
 blueprint = make_github_blueprint(
     client_id=os.getenv("GITHUB_OAUTH_CLIENT_ID"),
     client_secret=os.getenv("GITHUB_OAUTH_CLIENT_SECRET"),
-    scope="repo"
+    scope="repo",
+    redirect_to="github_login_success"
 )
 app.register_blueprint(blueprint, url_prefix="/login")
 
 
-
+github_client_id = os.getenv("GITHUB_OAUTH_CLIENT_ID")
+github_client_secret = os.getenv("GITHUB_OAUTH_CLIENT_SECRET")
 model = "text-embedding-3-small"
 openai_client = OpenAI()
 mongo_client = MongoClient(os.getenv("MONGODB_CONNECTION_STRING"))
 collection = mongo_client[os.getenv("MONGODB_DB_NAME")][os.getenv("MONGODB_COLLECTION_NAME")]
 users_collection = mongo_client[os.getenv("MONGODB_DB_NAME")]["users"]
 
-set_up_auth_middleware(app, users_collection)
+# set_up_auth_middleware(app, users_collection)
 
 
 @oauth_authorized.connect_via(blueprint)
@@ -62,6 +68,7 @@ def github_logged_in(blueprint, token):
     session["user_id"] = github_user_id
 
 @app.route("/users/repos", methods=["GET"])
+@cross_origin(supports_credentials=True)
 def list_repos():
     
     resp = github.get("/user/repos")
@@ -196,6 +203,51 @@ def ask():
    
     )
     return {"question": question , "response": response['messages'][-1].content}
+
+@app.route("/auth/github")
+def auth_github():
+    return redirect("/login/github")
+
+
+@app.route("/auth/success")
+def github_login_success():
+    if not github.authorized:
+        return redirect("http://localhost:3000")
+
+    resp = github.get("/user")
+
+    if not resp.ok:
+        return jsonify({"error": "Failed to fetch user"}), 500
+
+    user = resp.json()
+
+    # 🍪 Set a simple session cookie (you can store more if needed)
+    response = make_response(redirect("http://localhost:3000/dashboard"))
+    response.set_cookie(
+        "logged_in",
+        "true",
+        httponly=True,
+        samesite="Lax",
+        secure=False,
+    )
+
+    return response
+
+@app.route("/me")
+@cross_origin(supports_credentials=True)
+def me():
+    if not github.authorized:
+        return jsonify({"authenticated": False}), 401
+
+    user = session.get("user")
+    if not user:
+        resp = github.get("/user")
+        if not resp.ok:
+            return jsonify({"authenticated": False}), 401
+        user = resp.json()
+        session["user"] = user
+
+    return jsonify(user)
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
