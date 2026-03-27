@@ -27,3 +27,5 @@ instance/
 .webassets-cache
 
 .ipynb_checkpoints/
+
+node_modules/
