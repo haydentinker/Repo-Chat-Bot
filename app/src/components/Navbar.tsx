@@ -1,4 +1,4 @@
-import { Container, Select, Stack, Text } from "@mantine/core";
+import { Button, Container, Select, Stack, Text } from "@mantine/core";
 import { useEffect, useState } from "react";
 
 export const Navbar = () => {
@@ -32,6 +32,14 @@ export const Navbar = () => {
           data={repos}
           searchable
         />
+        <Button
+          variant="outline"
+          onClick={() => {
+            console.log("init new chat");
+          }}
+        >
+          New Chat +
+        </Button>
       </Stack>
     </Container>
   );

@@ -1,9 +1,35 @@
 import { AppShell, Burger, Button, Group, Modal, Text } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
 import { Navbar } from "../components/Navbar";
+import { useEffect, useState } from "react";
+import { io } from "socket.io-client";
 
+// Connect to backend
+const socket = io("http://localhost:5000", {
+  transports: ["websocket"], // enforce WebSocket
+});
+interface ServerResponse {
+  message: string;
+}
 export default function Dashboard() {
-  const [opened, { toggle }] = useDisclosure();
+  const [messages, setMessages] = useState<string[]>([]);
+  const [input, setInput] = useState<string>("");
+
+  useEffect(() => {
+    socket.on("response", (data: ServerResponse) => {
+      setMessages((prev) => [...prev, data.message]);
+    });
+
+    return () => {
+      socket.off("response");
+    };
+  }, []);
+
+  const sendMessage = (input: string) => {
+    socket.send(input);
+    setInput("");
+  };
+  const [opened, { open, toggle }] = useDisclosure(false);
   const [modalOpened, { open: openModal, close: closeModal }] =
     useDisclosure(false);
   return (
@@ -26,7 +52,7 @@ export default function Dashboard() {
               size="sm"
             />
             Github Repo Chat
-            <Button variant="filled" onClick={openModal}>
+            <Button variant="filled" onClick={() => sendMessage("hi")}>
               Load more repositories
             </Button>
           </Group>

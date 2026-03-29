@@ -10,6 +10,7 @@ from langchain_core.messages import HumanMessage
 from openai import OpenAI
 from agents.ragAgent import ragAgent
 from helpers.ingestRepo import ingest_repo
+from flask_socketio import SocketIO, emit
 load_dotenv()
 
 
@@ -43,7 +44,7 @@ CORS(
     allow_headers=["Content-Type", "Authorization"],
     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"]
 )
-
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet', ping_timeout=60, ping_interval=25)
 
 
 @oauth_authorized.connect_via(blueprint)
@@ -232,5 +233,9 @@ def user_repos():
         return jsonify({"error": "User not found"}), 404
 
     return jsonify(user_data[0])
+@socketio.on('message')
+def handle_message(msg):
+    print("Received message:", msg)
+    emit('response', {'message': f'Server got: {msg}'})
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    socketio.run(app, host='0.0.0.0', port=5000, debug=True)
