@@ -1,30 +1,24 @@
 import { Container, Select, Stack, Text } from "@mantine/core";
-import React, { useEffect, useState } from "react";
-
-interface Repo {
-  id: number;
-  name: string;
-  full_name: string;
-}
+import { useEffect, useState } from "react";
 
 export const Navbar = () => {
   const [value, setValue] = useState<string | null>("");
   const [loading, setLoading] = useState<boolean>(false);
-  const [repos, setRepos] = useState<Repo[]>([]);
+  const [repos, setRepos] = useState<string[]>([]);
   useEffect(() => {
     setLoading(true);
-    fetch("http://localhost:5000/users/repos", { credentials: "include" })
+    fetch("http://localhost:5000/user/loaded/repos", {
+      credentials: "include",
+    })
       .then(async (res) => {
         if (!res.ok) throw new Error("Not authenticated");
         return res.json();
       })
       .then((data) => {
-        console.log(data);
-        setRepos(data.repos);
+        setRepos(data.repoNames);
       })
       .finally(() => setLoading(false));
   }, []);
-  console.log(repos);
   return (
     <Container>
       <Stack>
@@ -35,7 +29,7 @@ export const Navbar = () => {
           label="Select repository to load relevant threads"
           placeholder="Repository name"
           limit={5}
-          data={repos.map((repo) => repo.full_name)}
+          data={repos}
           searchable
         />
       </Stack>

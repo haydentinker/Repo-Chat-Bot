@@ -25,7 +25,6 @@ export default function AuthProvider({
 }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
-
   useEffect(() => {
     fetch("http://localhost:5000/me", { credentials: "include" })
       .then(async (res) => {

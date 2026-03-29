@@ -8,9 +8,8 @@ type Props = {
 export default function PrivateRoute({ children }: Props) {
   const { user, loading } = useAuth();
   if (loading) return <div>Loading...</div>;
-  console.log(user);
   if (!user) {
-    window.location.href = "http://localhost:5000/auth";
+    window.location.href = "http://localhost:5000/auth/github";
     return null;
   }
 

@@ -1,20 +1,15 @@
 import os
-import hashlib
 os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
-from flask import Flask, redirect, request, jsonify, make_response, session
+from flask import Flask, redirect, request, jsonify, make_response, session, url_for
 from flask_cors import CORS, cross_origin
 from flask_dance.contrib.github import make_github_blueprint, github
 from flask_dance.consumer import oauth_authorized
 from dotenv import load_dotenv
-from langchain_community.document_loaders import GithubFileLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_openai import ChatOpenAI
-from pymongo import MongoClient, UpdateOne
+from pymongo import MongoClient
 from langchain_core.messages import HumanMessage
 from openai import OpenAI
 from agents.ragAgent import ragAgent
-from middleware.authentication import set_up_auth_middleware
-
+from helpers.ingestRepo import ingest_repo
 load_dotenv()
 
 
@@ -41,7 +36,14 @@ mongo_client = MongoClient(os.getenv("MONGODB_CONNECTION_STRING"))
 collection = mongo_client[os.getenv("MONGODB_DB_NAME")][os.getenv("MONGODB_COLLECTION_NAME")]
 users_collection = mongo_client[os.getenv("MONGODB_DB_NAME")]["users"]
 
-# set_up_auth_middleware(app, users_collection)
+CORS(
+    app,
+    supports_credentials=True,
+    origins=["http://localhost:5173"],
+    allow_headers=["Content-Type", "Authorization"],
+    methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+)
+
 
 
 @oauth_authorized.connect_via(blueprint)
@@ -68,105 +70,18 @@ def github_logged_in(blueprint, token):
     session["user_id"] = github_user_id
 
 @app.route("/users/repos", methods=["GET"])
-@cross_origin(supports_credentials=True)
 def list_repos():
     
     resp = github.get("/user/repos")
     if not resp.ok:
         return "Error fetching repos", 500
         
-    repos = resp.json() # List of repo objects
+    repos = resp.json()
     return {"repos": repos}
 
 def get_repo_id(repo_url):
     return repo_url.replace("https://github.com/", "").replace(".git", "")
 
-def hash_text(text):
-    return hashlib.md5(text.encode()).hexdigest()
-
-def get_embedding(text):
-   """Generates vector embeddings for the given text."""
-   embedding = openai_client.embeddings.create(input = text, model=model).data[0].embedding
-   return embedding
-
-def create_docs_with_embeddings(embeddings, docs, repo_id):
-    mongo_docs = []
-
-    for embedding, doc in zip(embeddings, docs):
-        text = doc.page_content
-        doc_id = f"{repo_id}_{hash_text(text)}"
-
-        mongo_docs.append({
-            "_id": doc_id,
-            "text": text,
-            "embedding": embedding,
-            "metadata": {
-                "repo": repo_id,
-                "source": doc.metadata.get("source")
-            }
-        })
-
-    return mongo_docs
-
-
-def upsert_documents(docs):
-    operations = [
-        UpdateOne(
-            {"_id": doc["_id"]},
-            {"$set": doc},
-            upsert=True
-        )
-        for doc in docs
-    ]
-
-    if operations:
-        collection.bulk_write(operations)
-def ingest_repo(repo_url):
-    repo_id = get_repo_id(repo_url)
-    parts = repo_id
-
-    loader = GithubFileLoader(
-        repo=parts,
-        branch="main",
-        access_token=os.getenv("GITHUB_ACCESS_TOKEN"),
-        github_api_url="https://api.github.com",
-        file_filter=lambda file_path: any(
-            file_path.endswith(ext) for ext in {".md", ".py", ".js", ".ts", ".txt", ".json"}
-        )
-    )
-    documents = loader.load()
-
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000,
-        chunk_overlap=200
-    )
-    docs = splitter.split_documents(documents)
-    texts = [doc.page_content for doc in docs]
-    response = openai_client.embeddings.create(
-        input=texts,
-        model=model
-    )
-    embeddings = [item.embedding for item in response.data]
-
-
-    mongo_docs = create_docs_with_embeddings(embeddings, docs, repo_id)
-
-   
-    current_doc_ids = {doc["_id"] for doc in mongo_docs}
-    existing_doc_ids = {doc["_id"] for doc in collection.find({"metadata.repo": repo_id}, {"_id": 1})}
-    deleted_doc_ids = existing_doc_ids - current_doc_ids
-
-    if deleted_doc_ids:
-        collection.delete_many({"_id": {"$in": list(deleted_doc_ids)}})
-        print(f"Deleted {len(deleted_doc_ids)} removed chunks for {repo_id}.")
-
-
-    upsert_documents(mongo_docs)
-    print(f"Ingested/updated {len(mongo_docs)} chunks for {repo_id}.")
-
-
-
-    return {"status": "success"}
 @app.route("/load_repo", methods=["POST"])
 def load_repo():
     data = request.json
@@ -185,7 +100,28 @@ def load_repo():
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+    
+@app.route("/ingest", methods=["POST"])
+def ingest():
 
+    user_id = session["user_id"]
+    if not user_id:
+        return jsonify({"status": "error", "message": "User not logged in"}), 401
+    user = users_collection.find_one({"github_id": user_id})
+    if not user:
+        return jsonify({"status": "error", "message": "User not found"}), 400
+
+    github_token = github.token["access_token"]
+
+    data = request.get_json()
+    if not data or "repo_name" not in data:
+        return jsonify({"status": "error", "message": "Missing 'repo_name' in request body"}), 400
+
+    repo_name = data["repo_name"]
+
+    github_token = github.token["access_token"]
+    result = ingest_repo(user_id, repo_name, github_token)
+    return jsonify(result)
 
 @app.route("/ask", methods=["POST"])
 def ask():
@@ -219,10 +155,7 @@ def github_login_success():
     if not resp.ok:
         return jsonify({"error": "Failed to fetch user"}), 500
 
-    user = resp.json()
-
-    # 🍪 Set a simple session cookie (you can store more if needed)
-    response = make_response(redirect("http://localhost:3000/dashboard"))
+    response = make_response(redirect("http://localhost:5173/dashboard"))
     response.set_cookie(
         "logged_in",
         "true",
@@ -234,7 +167,6 @@ def github_login_success():
     return response
 
 @app.route("/me")
-@cross_origin(supports_credentials=True)
 def me():
     if not github.authorized:
         return jsonify({"authenticated": False}), 401
@@ -249,5 +181,56 @@ def me():
 
     return jsonify(user)
 
+
+@app.before_request
+def check_authentication():
+    
+    public_endpoints = ['github.login', 'github.authorized']
+
+    if request.endpoint in public_endpoints or request.method == "OPTIONS":
+        return
+
+  
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify({"error": "Not authenticated"}), 401
+
+   
+    user = users_collection.find_one({"github_id": user_id})
+    if not user:
+        session.clear()
+        return jsonify({"error": "User not found"}), 401
+
+    return
+@app.route("/user/loaded/repos")
+def user_repos():
+    github_id = session.get("user_id")
+    if not github_id:
+        return jsonify({"error": "Not logged in"}), 401
+
+    pipeline = [
+        {"$match": {"github_id": github_id}},
+        {
+            "$project": {
+                "_id": 0,
+                "github_id": 1,
+                "username": 1,
+                "repoNames": {
+                    "$map": {
+                        "input": {"$objectToArray": "$repos"},
+                        "as": "r",
+                        "in": "$$r.k"
+                    }
+                }
+            }
+        }
+    ]
+
+    user_cursor = users_collection.aggregate(pipeline)
+    user_data = list(user_cursor)
+    if not user_data:
+        return jsonify({"error": "User not found"}), 404
+
+    return jsonify(user_data[0])
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
