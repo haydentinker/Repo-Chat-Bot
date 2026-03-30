@@ -11,6 +11,8 @@ from openai import OpenAI
 from agents.ragAgent import ragAgent
 from helpers.ingestRepo import ingest_repo
 from flask_socketio import SocketIO, emit
+from bson import ObjectId
+import uuid
 load_dotenv()
 
 
@@ -34,7 +36,7 @@ github_client_secret = os.getenv("GITHUB_OAUTH_CLIENT_SECRET")
 model = "text-embedding-3-small"
 openai_client = OpenAI()
 mongo_client = MongoClient(os.getenv("MONGODB_CONNECTION_STRING"))
-collection = mongo_client[os.getenv("MONGODB_DB_NAME")][os.getenv("MONGODB_COLLECTION_NAME")]
+collection = mongo_client[os.getenv("MONGODB_DB_NAME")]['vectors']
 users_collection = mongo_client[os.getenv("MONGODB_DB_NAME")]["users"]
 
 CORS(
@@ -172,6 +174,7 @@ def me():
     if not github.authorized:
         return jsonify({"authenticated": False}), 401
 
+    
     user = session.get("user")
     if not user:
         resp = github.get("/user")
@@ -233,9 +236,49 @@ def user_repos():
         return jsonify({"error": "User not found"}), 404
 
     return jsonify(user_data[0])
-@socketio.on('message')
-def handle_message(msg):
-    print("Received message:", msg)
-    emit('response', {'message': f'Server got: {msg}'})
+@socketio.on("message")
+def handle_message(data):
+    message = data.get("message")
+    repo_name = data.get("repo_name")
+    thread_id = data.get("thread_id")
+   
+    if not thread_id:
+        thread_id = ObjectId()
+    print(message, repo_name, thread_id)
+    if not message or not repo_name:
+        emit("response", {"error": "Both 'message' and 'repo_name' are required"})
+        return
+
+    human_message = HumanMessage(content=message)
+   
+    try:
+        user_context = {
+            "thread_id": str(thread_id),
+            "configurable": {
+                "user_id": session.get("user_id"),
+                "repo_name": repo_name,
+            }
+        }
+        input_data = {
+            "messages": [human_message],
+            "tool_inputs": {
+                "search_mongo": {
+                    "query": message,
+                    "config": {
+                        "user_id": session.get("user_id"),
+                        "repo_name": repo_name
+                    }
+                }
+            }
+        }
+        response = ragAgent.invoke(
+            input_data,
+            config=user_context
+        )
+        last_message = response.get('messages', [])[-1].content if response.get('messages') else ""
+        emit("response", {"message": message, "response": last_message, "thread_id": str(thread_id)})
+    except Exception as e:
+        emit("response", {"error": str(e)})
+
 if __name__ == "__main__":
     socketio.run(app, host='0.0.0.0', port=5000, debug=True)
