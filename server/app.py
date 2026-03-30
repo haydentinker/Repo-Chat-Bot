@@ -171,12 +171,12 @@ def me():
 @app.before_request
 def check_authentication():
     
-    public_endpoints = ['github.login', 'github.authorized']
+    public_endpoints = ['github.login', 'github.authorized', 'auth_github']
 
     if request.endpoint in public_endpoints or request.method == "OPTIONS":
         return
 
-  
+   
     github_id = session.get("github_id")
     if not github_id:
         return jsonify({"error": "Not authenticated"}), 401

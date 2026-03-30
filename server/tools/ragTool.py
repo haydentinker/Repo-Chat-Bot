@@ -31,17 +31,17 @@ vector_store = MongoDBAtlasVectorSearch(
 def search_mongo(query: str, config: RunnableConfig) -> List[Document]:
     """
      Use this tool to search a MongoDB vector store containing GitHub repository chunks. 
-    Inputs: query (the user's question), and config (user_id and repo_name). 
+    Inputs: query (the user's question), and config (github_id and repo_name). 
     Returns a list of Documents relevant to the repo.
     Search the MongoDB vector store for repository chunks
-    based on user_id and repo_name.
+    based on github_id and repo_name.
     """
     configurable = config.get("configurable", {})
-    github_id = configurable.get("user_id")
+    github_id = configurable.get("github_id")
     repo_name = configurable.get("repo_name")
     
     if not github_id or not repo_name:
-        raise ValueError("Both 'user_id' and 'repo_name' must be provided in config.")
+        raise ValueError("Both 'github_id' and 'repo_name' must be provided in config.")
 
     
 

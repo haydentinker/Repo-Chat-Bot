@@ -5,6 +5,9 @@ from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_mongodb import MongoDBChatMessageHistory
 from dotenv import load_dotenv
 from pymongo import MongoClient
+from langchain_mongodb.cache import MongoDBAtlasSemanticCache
+from langchain_core.globals import set_llm_cache
+from langchain_openai import OpenAIEmbeddings
 import os
 load_dotenv()
 client = MongoClient(os.getenv("MONGODB_CONNECTION_STRING"))
@@ -16,6 +19,17 @@ baseAgent = create_agent(
     tools=[search_mongo],
     system_prompt="You are a helpful coding assistant that can answer questions about GitHub repositories. You have access to the following tools: search_mongo. Always use search_mongo to retrieve information from the repository before answering, if the question is about repository code, files, or content. If you do not know the answer, say you do not know.",
     )
+
+EMBEDDING_MODEL = "text-embedding-3-small"
+embeddings = OpenAIEmbeddings(model=EMBEDDING_MODEL)
+set_llm_cache(MongoDBAtlasSemanticCache(
+    connection_string=os.getenv("MONGODB_CONNECTION_STRING"),
+    database_name=os.getenv("MONGODB_DB_NAME"),
+    collection_name = "semantic_cache",
+    embedding = embeddings,
+    index_name = "vector_index",
+    similarity_threshold = 0.5
+))
 
 def get_thread_history(session_id: str):
     return MongoDBChatMessageHistory(
