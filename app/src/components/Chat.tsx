@@ -31,12 +31,12 @@ const Chat: React.FC<ChatProps> = ({ socket, selectedRepo }) => {
         message?: string;
         response?: string;
         error?: string;
-        thread_id: string;
+        session_id: string;
       }) => {
         if (data.error) {
           console.error("RAG Error:", data.error);
         } else {
-          setThread(data.thread_id);
+          setThread(data.session_id);
           setMessages([
             ...messages,
             { text: data.response ?? "Error", sender: "AI" },
@@ -53,7 +53,7 @@ const Chat: React.FC<ChatProps> = ({ socket, selectedRepo }) => {
     socket.emit("message", {
       message: input,
       repo_name: selectedRepo,
-      thread_id: thread,
+      session_id: thread,
     });
     setMessages([...messages, { sender: "HUMAN", text: input }]);
     setInput("");

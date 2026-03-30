@@ -6,13 +6,13 @@ from flask_dance.contrib.github import make_github_blueprint, github
 from flask_dance.consumer import oauth_authorized
 from dotenv import load_dotenv
 from pymongo import MongoClient
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, AIMessage
 from openai import OpenAI
 from agents.ragAgent import ragAgent
 from helpers.ingestRepo import ingest_repo
 from flask_socketio import SocketIO, emit
 from bson import ObjectId
-import uuid
+
 load_dotenv()
 
 
@@ -38,7 +38,6 @@ openai_client = OpenAI()
 mongo_client = MongoClient(os.getenv("MONGODB_CONNECTION_STRING"))
 collection = mongo_client[os.getenv("MONGODB_DB_NAME")]['vectors']
 users_collection = mongo_client[os.getenv("MONGODB_DB_NAME")]["users"]
-
 CORS(
     app,
     supports_credentials=True,
@@ -70,7 +69,7 @@ def github_logged_in(blueprint, token):
         }
         users_collection.insert_one(new_user)
     
-    session["user_id"] = github_user_id
+    session["github_id"] = github_user_id
 
 @app.route("/users/repos", methods=["GET"])
 def list_repos():
@@ -107,10 +106,10 @@ def load_repo():
 @app.route("/ingest", methods=["POST"])
 def ingest():
 
-    user_id = session["user_id"]
-    if not user_id:
+    github_id = session["github_id"]
+    if not github_id:
         return jsonify({"status": "error", "message": "User not logged in"}), 401
-    user = users_collection.find_one({"github_id": user_id})
+    user = users_collection.find_one({"github_id": github_id})
     if not user:
         return jsonify({"status": "error", "message": "User not found"}), 400
 
@@ -123,25 +122,8 @@ def ingest():
     repo_name = data["repo_name"]
 
     github_token = github.token["access_token"]
-    result = ingest_repo(user_id, repo_name, github_token)
+    result = ingest_repo(github_id, repo_name, github_token)
     return jsonify(result)
-
-@app.route("/ask", methods=["POST"])
-def ask():
-    data = request.json
-    question = data.get("question")
-    repo_name = data.get("repo_name")
-    humanMessage = HumanMessage(content=question)
-    input= {
-        "messages": humanMessage,
-        "repo_name" : repo_name
-    }
-    response = ragAgent.invoke(
-    input,
-    {"configurable": {"thread_id": "2"}}
-   
-    )
-    return {"question": question , "response": response['messages'][-1].content}
 
 @app.route("/auth/github")
 def auth_github():
@@ -195,12 +177,12 @@ def check_authentication():
         return
 
   
-    user_id = session.get("user_id")
-    if not user_id:
+    github_id = session.get("github_id")
+    if not github_id:
         return jsonify({"error": "Not authenticated"}), 401
 
    
-    user = users_collection.find_one({"github_id": user_id})
+    user = users_collection.find_one({"github_id": github_id})
     if not user:
         session.clear()
         return jsonify({"error": "User not found"}), 401
@@ -208,7 +190,7 @@ def check_authentication():
     return
 @app.route("/user/loaded/repos")
 def user_repos():
-    github_id = session.get("user_id")
+    github_id = session.get("github_id")
     if not github_id:
         return jsonify({"error": "Not logged in"}), 401
 
@@ -240,43 +222,32 @@ def user_repos():
 def handle_message(data):
     message = data.get("message")
     repo_name = data.get("repo_name")
-    thread_id = data.get("thread_id")
-   
-    if not thread_id:
-        thread_id = ObjectId()
-    print(message, repo_name, thread_id)
+    session_id = data.get("session_id") or str(ObjectId())
+
     if not message or not repo_name:
         emit("response", {"error": "Both 'message' and 'repo_name' are required"})
         return
 
-    human_message = HumanMessage(content=message)
-   
+    input_data = {
+        "messages": [HumanMessage(content=message)],
+    }
+
+    user_context = {
+        "configurable": {
+            "github_id": session.get("github_id"),
+            "repo_name": repo_name,
+            "session_id": session_id
+        }
+    }
     try:
-        user_context = {
-            "thread_id": str(thread_id),
-            "configurable": {
-                "user_id": session.get("user_id"),
-                "repo_name": repo_name,
-            }
-        }
-        input_data = {
-            "messages": [human_message],
-            "tool_inputs": {
-                "search_mongo": {
-                    "query": message,
-                    "config": {
-                        "user_id": session.get("user_id"),
-                        "repo_name": repo_name
-                    }
-                }
-            }
-        }
+       
         response = ragAgent.invoke(
             input_data,
             config=user_context
         )
+        
         last_message = response.get('messages', [])[-1].content if response.get('messages') else ""
-        emit("response", {"message": message, "response": last_message, "thread_id": str(thread_id)})
+        emit("response", {"message": message, "response": last_message, "session_id": str(session_id)})
     except Exception as e:
         emit("response", {"error": str(e)})
 
