@@ -25,7 +25,7 @@ const MOCK_RESPONSES = [
 function simulateStream(
   text: string,
   onToken: (token: string) => void,
-  onComplete: () => void
+  onComplete: () => void,
 ) {
   const words = text.split(" ");
   let i = 0;
@@ -147,7 +147,7 @@ export default function Chat({ socket, selectedRepo }: ChatProps) {
           () => {
             setStatus("idle");
             currentMessageRef.current = "";
-          }
+          },
         );
       }, 600);
       return;
@@ -194,8 +194,7 @@ export default function Chat({ socket, selectedRepo }: ChatProps) {
               key={`${index}-${msg.role}`}
               style={{
                 display: "flex",
-                justifyContent:
-                  msg.role === "user" ? "flex-end" : "flex-start",
+                justifyContent: msg.role === "user" ? "flex-end" : "flex-start",
               }}
             >
               <Paper
@@ -205,7 +204,7 @@ export default function Chat({ socket, selectedRepo }: ChatProps) {
                   backgroundColor:
                     msg.role === "user"
                       ? theme.colors.violet[8]
-                      : theme.colors.dark[6],
+                      : "var(--mantine-color-default)",
                   borderRadius:
                     msg.role === "user"
                       ? "18px 18px 4px 18px"
@@ -239,8 +238,8 @@ export default function Chat({ socket, selectedRepo }: ChatProps) {
         px="md"
         py="sm"
         style={{
-          borderTop: `1px solid ${theme.colors.dark[5]}`,
-          backgroundColor: theme.colors.dark[7],
+          borderTop: "1px solid var(--mantine-color-default-border)",
+          backgroundColor: "var(--mantine-color-body)",
         }}
       >
         <Stack gap="xs" style={{ maxWidth: 900, margin: "0 auto" }}>
@@ -258,8 +257,8 @@ export default function Chat({ socket, selectedRepo }: ChatProps) {
               radius="xl"
               styles={{
                 input: {
-                  backgroundColor: theme.colors.dark[6],
-                  border: `1px solid ${theme.colors.dark[4]}`,
+                  backgroundColor: "var(--mantine-color-default)",
+                  border: "1px solid var(--mantine-color-default-border)",
                 },
               }}
             />
