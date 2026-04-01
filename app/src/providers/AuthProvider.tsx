@@ -1,10 +1,13 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
 
 type User = {
-  login: string;
-  id: number;
-  avatar_url: string;
+  github_id: string;
+  username: string;
+  email: string | null;
+  authenticated: boolean;
 };
+
+export type { User };
 
 type AuthContextType = {
   user: User | null;
