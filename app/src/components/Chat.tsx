@@ -8,24 +8,45 @@ import {
   ScrollArea,
   Box,
   Group,
-  Affix,
+  Loader,
+  Switch,
+  useMantineTheme,
 } from "@mantine/core";
-import { io, Socket } from "socket.io-client";
+import { Socket } from "socket.io-client";
+
+const MOCK_RESPONSES = [
+  "This repository uses a React frontend with a Flask backend. The main entry point is `app.py`, which sets up the Flask app, SocketIO, and all the routes including GitHub OAuth via flask-dance.",
+  "The ingestion pipeline lives in `helpers/ingestRepo.py`. It fetches files from GitHub, splits them into chunks using `RecursiveCharacterTextSplitter`, embeds them with OpenAI's `text-embedding-3-small`, and upserts them into MongoDB Atlas for vector search.",
+  "Authentication is handled with flask-login. After a successful GitHub OAuth flow, `login_user()` is called and the session is managed via a MongoDB-backed user loader. Protected routes check `current_user.is_authenticated` via a `before_request` hook.",
+  "The RAG agent is built with LangGraph's `create_react_agent` and a `search_mongo` tool that performs vector similarity search against the ingested repository chunks. Responses are streamed token-by-token using a `BaseCallbackHandler`.",
+  "I don't see anything in the repository that matches that query. Try rephrasing or make sure the relevant files have been ingested first.",
+];
+
+function simulateStream(
+  text: string,
+  onToken: (token: string) => void,
+  onComplete: () => void
+) {
+  const words = text.split(" ");
+  let i = 0;
+  const interval = setInterval(() => {
+    if (i >= words.length) {
+      clearInterval(interval);
+      onComplete();
+      return;
+    }
+    onToken((i === 0 ? "" : " ") + words[i]);
+    i++;
+  }, 45);
+  return interval;
+}
 
 type Role = "user" | "assistant";
+type ChatStatus = "idle" | "waiting" | "streaming";
 
 interface Message {
   role: Role;
   content: string;
-}
-
-interface ChatTokenEvent {
-  text: string;
-}
-
-interface StreamCompleteEvent {
-  status: string;
-  session_id: string;
 }
 
 interface ChatProps {
@@ -34,145 +55,239 @@ interface ChatProps {
 }
 
 export default function Chat({ socket, selectedRepo }: ChatProps) {
+  const theme = useMantineTheme();
   const [thread, setThread] = useState("");
-  const [input, setInput] = useState<string>("");
+  const [input, setInput] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
-  const [isStreaming, setIsStreaming] = useState<boolean>(false);
+  const [status, setStatus] = useState<ChatStatus>("idle");
+  const [mockMode, setMockMode] = useState(false);
 
-  const currentMessageRef = useRef<string>("");
+  const currentMessageRef = useRef("");
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const mockIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
-    const handleToken = (data: ChatTokenEvent) => {
-      setIsStreaming(true);
-      currentMessageRef.current += data.text;
+    const handleToken = ({ text }: { text: string }) => {
+      currentMessageRef.current += text;
+      const content = currentMessageRef.current;
 
+      setStatus("streaming");
       setMessages((prev) => {
-        const updated = [...prev];
-
-        if (
-          updated.length &&
-          updated[updated.length - 1].role === "assistant"
-        ) {
-          updated[updated.length - 1] = {
-            ...updated[updated.length - 1],
-            content: currentMessageRef.current,
-          };
-        } else {
-          updated.push({
-            role: "assistant",
-            content: currentMessageRef.current,
-          });
+        const last = prev[prev.length - 1];
+        if (last?.role === "assistant") {
+          return [...prev.slice(0, -1), { role: "assistant", content }];
         }
-
-        return updated;
+        return [...prev, { role: "assistant", content }];
       });
     };
 
-    const handleComplete = (data: StreamCompleteEvent) => {
-      setThread(data.session_id);
-      setIsStreaming(false);
+    const handleComplete = ({
+      session_id,
+    }: {
+      status: string;
+      session_id: string;
+    }) => {
+      setThread(session_id);
+      setStatus("idle");
       currentMessageRef.current = "";
+    };
+
+    const handleError = ({ error }: { error: string }) => {
+      setStatus("idle");
+      currentMessageRef.current = "";
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: `Error: ${error}` },
+      ]);
     };
 
     socket.on("chat_token", handleToken);
     socket.on("stream_complete", handleComplete);
+    socket.on("response", handleError);
 
     return () => {
       socket.off("chat_token", handleToken);
       socket.off("stream_complete", handleComplete);
+      socket.off("response", handleError);
+      if (mockIntervalRef.current) clearInterval(mockIntervalRef.current);
     };
-  }, []);
+  }, [socket]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [messages, status]);
 
   const sendMessage = () => {
-    if (!input.trim() || isStreaming) return;
+    if (!input.trim() || status !== "idle") return;
 
-    const userMessage: Message = {
-      role: "user",
-      content: input,
-    };
+    currentMessageRef.current = "";
+    const userInput = input;
+    setMessages((prev) => [...prev, { role: "user", content: userInput }]);
+    setInput("");
 
-    setMessages((prev) => [...prev, userMessage]);
+    if (mockMode) {
+      setStatus("waiting");
+      setTimeout(() => {
+        setStatus("streaming");
+        const response =
+          MOCK_RESPONSES[Math.floor(Math.random() * MOCK_RESPONSES.length)];
+        mockIntervalRef.current = simulateStream(
+          response,
+          (token) => {
+            currentMessageRef.current += token;
+            const content = currentMessageRef.current;
+            setMessages((prev) => {
+              const last = prev[prev.length - 1];
+              if (last?.role === "assistant") {
+                return [...prev.slice(0, -1), { role: "assistant", content }];
+              }
+              return [...prev, { role: "assistant", content }];
+            });
+          },
+          () => {
+            setStatus("idle");
+            currentMessageRef.current = "";
+          }
+        );
+      }, 600);
+      return;
+    }
 
     socket.emit("message", {
-      message: input,
+      message: userInput,
       repo_name: selectedRepo,
-      session_id: thread,
+      session_id: thread || undefined,
     });
-
-    setInput("");
+    setStatus("waiting");
   };
 
   return (
     <Box
       style={{
-        height: "100%",
-        width: "100%",
         display: "flex",
-        justifyContent: "center",
+        flexDirection: "column",
+        height: "calc(100vh - var(--app-shell-header-height, 60px) - 32px)",
       }}
     >
-      <Box
-        style={{
-          width: "100%",
-          maxWidth: 800,
-          height: "100%",
-          display: "flex",
-          flexDirection: "column",
-        }}
-      >
-        <ScrollArea style={{ flex: 1, padding: 16 }} mb={"lg"}>
-          <Stack>
-            {messages.map((msg, index) => (
+      <ScrollArea style={{ flex: 1 }} px="md" pb="md">
+        <Stack gap="md" py="md" style={{ maxWidth: 900, margin: "0 auto" }}>
+          {messages.length === 0 && (
+            <Box
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                height: 200,
+              }}
+            >
+              <Text c="dimmed" size="sm">
+                Ask anything about{" "}
+                <Text span fw={600} c="violet">
+                  {selectedRepo}
+                </Text>
+              </Text>
+            </Box>
+          )}
+
+          {messages.map((msg, index) => (
+            <Box
+              key={`${index}-${msg.role}`}
+              style={{
+                display: "flex",
+                justifyContent:
+                  msg.role === "user" ? "flex-end" : "flex-start",
+              }}
+            >
               <Paper
-                key={`${index}-${msg.role}`}
-                style={(theme) => ({
-                  alignSelf: msg.role === "user" ? "flex-end" : "flex-start",
+                style={{
+                  maxWidth: "82%",
+                  padding: "10px 16px",
                   backgroundColor:
                     msg.role === "user"
-                      ? theme.colors.blue[5]
-                      : theme.colors.gray[2],
-                  color: msg.role === "user" ? "white" : "black",
-                  padding: "8px 12px",
-                  borderRadius: 12,
-                  maxWidth: "70%",
+                      ? theme.colors.violet[8]
+                      : theme.colors.dark[6],
+                  borderRadius:
+                    msg.role === "user"
+                      ? "18px 18px 4px 18px"
+                      : "18px 18px 18px 4px",
                   wordBreak: "break-word",
-                })}
+                  whiteSpace: "pre-wrap",
+                }}
+                shadow="xs"
               >
-                <Text size="sm">{msg.content}</Text>
+                <Text size="sm" style={{ lineHeight: 1.6 }}>
+                  {msg.content}
+                </Text>
               </Paper>
-            ))}
+            </Box>
+          ))}
 
-            {isStreaming && (
+          {status === "waiting" && (
+            <Group gap="xs">
+              <Loader size="xs" color="violet" />
               <Text size="sm" c="dimmed">
-                AI is typing...
+                Thinking…
               </Text>
-            )}
+            </Group>
+          )}
 
-            <div ref={bottomRef} />
-          </Stack>
-        </ScrollArea>
+          <div ref={bottomRef} />
+        </Stack>
+      </ScrollArea>
 
-        <Box p="md" pos="fixed" bottom={0} w="50%">
+      <Box
+        px="md"
+        py="sm"
+        style={{
+          borderTop: `1px solid ${theme.colors.dark[5]}`,
+          backgroundColor: theme.colors.dark[7],
+        }}
+      >
+        <Stack gap="xs" style={{ maxWidth: 900, margin: "0 auto" }}>
           <Group>
             <TextInput
               style={{ flex: 1 }}
               value={input}
               onChange={(e) => setInput(e.currentTarget.value)}
-              placeholder="Type a message..."
+              placeholder={`Message ${selectedRepo}…`}
               onKeyDown={(e) => {
-                if (e.key === "Enter") sendMessage();
+                if (e.key === "Enter" && !e.shiftKey) sendMessage();
+              }}
+              disabled={status !== "idle"}
+              size="md"
+              radius="xl"
+              styles={{
+                input: {
+                  backgroundColor: theme.colors.dark[6],
+                  border: `1px solid ${theme.colors.dark[4]}`,
+                },
               }}
             />
-            <Button onClick={sendMessage} disabled={isStreaming}>
+            <Button
+              onClick={sendMessage}
+              disabled={status !== "idle"}
+              size="md"
+              radius="xl"
+              color="violet"
+              px="xl"
+            >
               Send
             </Button>
           </Group>
-        </Box>
+          <Group justify="flex-end">
+            <Switch
+              size="xs"
+              checked={mockMode}
+              onChange={(e) => setMockMode(e.currentTarget.checked)}
+              label={
+                <Text size="xs" c="dimmed">
+                  Mock mode
+                </Text>
+              }
+              color="violet"
+            />
+          </Group>
+        </Stack>
       </Box>
     </Box>
   );

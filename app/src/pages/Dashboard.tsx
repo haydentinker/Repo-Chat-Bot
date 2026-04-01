@@ -6,6 +6,9 @@ import {
   Modal,
   Radio,
   Text,
+  ActionIcon,
+  useComputedColorScheme,
+  useMantineColorScheme,
 } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
 import { Navbar } from "../components/Navbar";
@@ -15,6 +18,7 @@ import Chat from "../components/Chat";
 
 const socket = io("http://localhost:5000", {
   transports: ["websocket"],
+  withCredentials: true,
 });
 
 export default function Dashboard() {
@@ -22,6 +26,8 @@ export default function Dashboard() {
   const [modalOpened, { open: openModal, close: closeModal }] =
     useDisclosure(false);
   const [newRepo, setNewRepo] = useState("");
+  const { toggleColorScheme } = useMantineColorScheme();
+  const colorScheme = useComputedColorScheme("dark");
   return (
     <>
       <AppShell
@@ -34,17 +40,31 @@ export default function Dashboard() {
         padding="md"
       >
         <AppShell.Header>
-          <Group h="100%" px="md">
-            <Burger
-              opened={opened}
-              onClick={toggle}
-              hiddenFrom="sm"
-              size="sm"
-            />
-            Github Repo Chat
-            <Button variant="filled" onClick={openModal}>
-              Load more repositories
-            </Button>
+          <Group h="100%" px="md" justify="space-between">
+            <Group>
+              <Burger
+                opened={opened}
+                onClick={toggle}
+                hiddenFrom="sm"
+                size="sm"
+              />
+              <Text fw={600} size="sm">
+                Repo Chat
+              </Text>
+            </Group>
+            <Group>
+              <Button variant="light" color="violet" onClick={openModal} size="sm">
+                Load repository
+              </Button>
+              <ActionIcon
+                variant="subtle"
+                size="lg"
+                onClick={toggleColorScheme}
+                title="Toggle color scheme"
+              >
+                {colorScheme === "dark" ? "☀️" : "🌙"}
+              </ActionIcon>
+            </Group>
           </Group>
         </AppShell.Header>
         <AppShell.Navbar p="md">
