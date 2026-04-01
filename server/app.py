@@ -12,7 +12,7 @@ from agents.ragAgent import ragAgent
 from helpers.ingestRepo import ingest_repo
 from flask_socketio import SocketIO, emit
 from bson import ObjectId
-
+from datetime import datetime, UTC
 load_dotenv()
 
 
@@ -36,6 +36,7 @@ github_client_secret = os.getenv("GITHUB_OAUTH_CLIENT_SECRET")
 model = "text-embedding-3-small"
 openai_client = OpenAI()
 mongo_client = MongoClient(os.getenv("MONGODB_CONNECTION_STRING"))
+thread_collection =mongo_client[os.getenv("MONGODB_DB_NAME")]['threads']
 collection = mongo_client[os.getenv("MONGODB_DB_NAME")]['vectors']
 users_collection = mongo_client[os.getenv("MONGODB_DB_NAME")]["users"]
 CORS(
@@ -222,8 +223,23 @@ def user_repos():
 def handle_message(data):
     message = data.get("message")
     repo_name = data.get("repo_name")
-    session_id = data.get("session_id") or str(ObjectId())
-
+    session_id = data.get("session_id")
+    github_id =session.get("github_id")
+    now = datetime.now(UTC)
+    if session_id:
+        thread_collection.update_one({
+            "session_id" : session_id,},
+            {"$set":{"last_updated": now }})
+    else:
+        session_id = str(ObjectId())
+        thread_collection.insert_one({
+            "session_id": session_id,
+            "github_id": github_id,
+            "repo_name": repo_name,
+            "created_at": now ,
+            "last_updated": now,
+            "name":message
+        })
     if not message or not repo_name:
         emit("response", {"error": "Both 'message' and 'repo_name' are required"})
         return
@@ -234,22 +250,36 @@ def handle_message(data):
 
     user_context = {
         "configurable": {
-            "github_id": session.get("github_id"),
+            "github_id": github_id ,
             "repo_name": repo_name,
             "session_id": session_id
         }
     }
     try:
-       
-        response = ragAgent.invoke(
-            input_data,
-            config=user_context
-        )
-        
-        last_message = response.get('messages', [])[-1].content if response.get('messages') else ""
-        emit("response", {"message": message, "response": last_message, "session_id": str(session_id)})
+        for chunk in ragAgent.stream(input_data, config=user_context):
+
+            messages = chunk.get("model", {}).get("messages", [])
+            if not messages:
+                continue
+
+            msg = messages[0]
+
+     
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                print("Tool call detected:", msg.tool_calls)
+                continue
+
+  
+            if hasattr(msg, "content") and msg.content:
+                emit('chat_token', {'text': msg.content})
+                socketio.sleep(0)
+
     except Exception as e:
-        emit("response", {"error": str(e)})
+        emit('chat_token', {'text': "\nAn error occurred while processing your request."})
+        print(f"Stream error: {e}")
+
+    finally:
+        emit('stream_complete', {'status': 'done', 'session_id':session_id})
 
 if __name__ == "__main__":
     socketio.run(app, host='0.0.0.0', port=5000, debug=True)

@@ -1,18 +1,31 @@
-import React, { useState, useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
-  Box,
-  Button,
   TextInput,
-  ScrollArea,
-  Text,
-  Stack,
+  Button,
   Paper,
+  Stack,
+  Text,
+  ScrollArea,
+  Box,
+  Group,
+  Affix,
 } from "@mantine/core";
-import { Socket } from "socket.io-client";
+import { io, Socket } from "socket.io-client";
+
+type Role = "user" | "assistant";
 
 interface Message {
-  sender: "HUMAN" | "AI";
+  role: Role;
+  content: string;
+}
+
+interface ChatTokenEvent {
   text: string;
+}
+
+interface StreamCompleteEvent {
+  status: string;
+  session_id: string;
 }
 
 interface ChatProps {
@@ -20,93 +33,147 @@ interface ChatProps {
   selectedRepo: string;
 }
 
-const Chat: React.FC<ChatProps> = ({ socket, selectedRepo }) => {
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [input, setInput] = useState<string>("");
+export default function Chat({ socket, selectedRepo }: ChatProps) {
   const [thread, setThread] = useState("");
+  const [input, setInput] = useState<string>("");
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [isStreaming, setIsStreaming] = useState<boolean>(false);
+
+  const currentMessageRef = useRef<string>("");
+  const bottomRef = useRef<HTMLDivElement | null>(null);
+
   useEffect(() => {
-    socket.on(
-      "response",
-      (data: {
-        message?: string;
-        response?: string;
-        error?: string;
-        session_id: string;
-      }) => {
-        if (data.error) {
-          console.error("RAG Error:", data.error);
+    const handleToken = (data: ChatTokenEvent) => {
+      setIsStreaming(true);
+      currentMessageRef.current += data.text;
+
+      setMessages((prev) => {
+        const updated = [...prev];
+
+        if (
+          updated.length &&
+          updated[updated.length - 1].role === "assistant"
+        ) {
+          updated[updated.length - 1] = {
+            ...updated[updated.length - 1],
+            content: currentMessageRef.current,
+          };
         } else {
-          setThread(data.session_id);
-          setMessages([
-            ...messages,
-            { text: data.response ?? "Error", sender: "AI" },
-          ]);
+          updated.push({
+            role: "assistant",
+            content: currentMessageRef.current,
+          });
         }
-      },
-    );
-    return () => {
-      socket.off("response");
+
+        return updated;
+      });
     };
-  }, [socket]);
+
+    const handleComplete = (data: StreamCompleteEvent) => {
+      setThread(data.session_id);
+      setIsStreaming(false);
+      currentMessageRef.current = "";
+    };
+
+    socket.on("chat_token", handleToken);
+    socket.on("stream_complete", handleComplete);
+
+    return () => {
+      socket.off("chat_token", handleToken);
+      socket.off("stream_complete", handleComplete);
+    };
+  }, []);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
 
   const sendMessage = () => {
+    if (!input.trim() || isStreaming) return;
+
+    const userMessage: Message = {
+      role: "user",
+      content: input,
+    };
+
+    setMessages((prev) => [...prev, userMessage]);
+
     socket.emit("message", {
       message: input,
       repo_name: selectedRepo,
       session_id: thread,
     });
-    setMessages([...messages, { sender: "HUMAN", text: input }]);
+
     setInput("");
   };
+
   return (
     <Box
       style={{
-        maxWidth: 400,
-        margin: "0 auto",
+        height: "100%",
+        width: "100%",
         display: "flex",
-        flexDirection: "column",
-        height: "80vh",
-        border: "1px solid #ccc",
-        borderRadius: 8,
-        padding: 16,
+        justifyContent: "center",
       }}
     >
-      <ScrollArea style={{ flex: 1, marginBottom: 16 }}>
-        <Stack>
-          {messages.map((msg, index) => (
-            <Paper
-              key={`${index}-${msg.sender}`}
-              style={(theme) => ({
-                alignSelf: msg.sender === "HUMAN" ? "flex-end" : "flex-start",
-                backgroundColor:
-                  msg.sender === "HUMAN"
-                    ? theme.colors.blue[5]
-                    : theme.colors.gray[2],
-                color: msg.sender === "HUMAN" ? "white" : "black",
-                padding: "8px 12px",
-                borderRadius: 12,
-                maxWidth: "70%",
-                wordBreak: "break-word",
-              })}
-            >
-              <Text size="sm">{msg.text}</Text>
-            </Paper>
-          ))}
-        </Stack>
-      </ScrollArea>
+      <Box
+        style={{
+          width: "100%",
+          maxWidth: 800,
+          height: "100%",
+          display: "flex",
+          flexDirection: "column",
+        }}
+      >
+        <ScrollArea style={{ flex: 1, padding: 16 }} mb={"lg"}>
+          <Stack>
+            {messages.map((msg, index) => (
+              <Paper
+                key={`${index}-${msg.role}`}
+                style={(theme) => ({
+                  alignSelf: msg.role === "user" ? "flex-end" : "flex-start",
+                  backgroundColor:
+                    msg.role === "user"
+                      ? theme.colors.blue[5]
+                      : theme.colors.gray[2],
+                  color: msg.role === "user" ? "white" : "black",
+                  padding: "8px 12px",
+                  borderRadius: 12,
+                  maxWidth: "70%",
+                  wordBreak: "break-word",
+                })}
+              >
+                <Text size="sm">{msg.content}</Text>
+              </Paper>
+            ))}
 
-      <Box style={{ display: "flex", gap: 8 }}>
-        <TextInput
-          placeholder="Type a message"
-          value={input}
-          onChange={(e) => setInput(e.currentTarget.value)}
-          style={{ flex: 1 }}
-          onKeyDown={(e) => e.key === "Enter" && sendMessage()}
-        />
-        <Button onClick={sendMessage}>Send</Button>
+            {isStreaming && (
+              <Text size="sm" c="dimmed">
+                AI is typing...
+              </Text>
+            )}
+
+            <div ref={bottomRef} />
+          </Stack>
+        </ScrollArea>
+
+        <Box p="md" pos="fixed" bottom={0} w="50%">
+          <Group>
+            <TextInput
+              style={{ flex: 1 }}
+              value={input}
+              onChange={(e) => setInput(e.currentTarget.value)}
+              placeholder="Type a message..."
+              onKeyDown={(e) => {
+                if (e.key === "Enter") sendMessage();
+              }}
+            />
+            <Button onClick={sendMessage} disabled={isStreaming}>
+              Send
+            </Button>
+          </Group>
+        </Box>
       </Box>
     </Box>
   );
-};
-
-export default Chat;
+}
