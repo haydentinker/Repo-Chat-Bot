@@ -1,4 +1,5 @@
 import os
+from contextvars import ContextVar
 from dotenv import load_dotenv
 from pymongo import MongoClient
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
@@ -8,6 +9,27 @@ from langchain_mongodb.cache import MongoDBAtlasSemanticCache
 from langchain_core.globals import set_llm_cache
 from langgraph.prebuilt import create_react_agent
 from tools.ragTool import search_mongo
+
+
+cache_namespace: ContextVar[str] = ContextVar("cache_namespace", default="")
+
+
+class NamespacedSemanticCache(MongoDBAtlasSemanticCache):
+    """Semantic cache that isolates entries by user + repo.
+
+    The namespace is prepended to `llm_string` so the existing
+    ``llm_string`` Atlas index handles scoping without schema changes.
+    """
+
+    def _namespaced(self, llm_string: str) -> str:
+        ns = cache_namespace.get()
+        return f"{ns}::{llm_string}" if ns else llm_string
+
+    def lookup(self, prompt: str, llm_string: str):
+        return super().lookup(prompt, self._namespaced(llm_string))
+
+    def update(self, prompt: str, llm_string: str, return_val, **kwargs) -> None:
+        super().update(prompt, self._namespaced(llm_string), return_val, **kwargs)
 
 load_dotenv()
 client = MongoClient(os.getenv("MONGODB_CONNECTION_STRING"))

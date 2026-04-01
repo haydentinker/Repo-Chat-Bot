@@ -187,6 +187,17 @@ def user_repos():
         {"_id": 0, "github_id": 0}
     )
     return jsonify(list(docs))
+
+@app.route("/user/threads")
+def user_threads():
+    repo_name = request.args.get("repo_name")
+    if not repo_name:
+        return jsonify({"error": "Missing 'repo_name' query parameter"}), 400
+    docs = thread_collection.find(
+        {"github_id": current_user.github_id, "repo_name": repo_name},
+        {"_id": 0, "github_id": 0},
+    ).sort("last_updated", -1)
+    return jsonify(list(docs))
 @socketio.on("message")
 def handle_message(data):
     message = data.get("message")
