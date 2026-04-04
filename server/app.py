@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 from pymongo import MongoClient, ReturnDocument
 from langchain_core.messages import HumanMessage
 from openai import OpenAI
-from agents.ragAgent import ragAgent
+from agents.ragAgent import baseAgent, get_thread_history
 from helpers.ingestRepo import ingest_repo
 from flask_socketio import SocketIO, emit
 from bson import ObjectId
@@ -198,6 +198,31 @@ def user_threads():
         {"_id": 0, "github_id": 0},
     ).sort("last_updated", -1)
     return jsonify(list(docs))
+
+
+@app.route("/user/thread/<session_id>/messages")
+def thread_messages(session_id):
+    thread_doc = thread_collection.find_one({
+        "session_id": session_id,
+        "github_id": current_user.github_id,
+    })
+    if not thread_doc:
+        return jsonify({"error": "Thread not found"}), 404
+
+    history = get_thread_history(session_id)
+    lc_messages = history.get_last_messages(limit=50)
+
+    messages = []
+    for msg in lc_messages:
+        if msg.type not in ("human", "ai"):
+            continue
+        content = msg.content if isinstance(msg.content, str) else ""
+        if not content:
+            continue
+        role = "user" if msg.type == "human" else "assistant"
+        messages.append({"role": role, "content": content})
+
+    return jsonify(messages)
 @socketio.on("message")
 def handle_message(data):
     message = data.get("message")
@@ -227,7 +252,6 @@ def handle_message(data):
             "name": message
         })
 
-    input_data = {"messages": [HumanMessage(content=message)]}
     user_context = {
         "configurable": {
             "github_id": github_id,
@@ -242,7 +266,12 @@ def handle_message(data):
                 callbacks=[TokenStreamHandler(sid)],
                 configurable=user_context["configurable"],
             )
-            ragAgent.invoke(input_data, config=config)
+            history = get_thread_history(session_id)
+            prior_messages = history.messages
+            all_messages = prior_messages + [HumanMessage(content=message)]
+            result = baseAgent.invoke({"messages": all_messages}, config=config)
+            new_messages = result["messages"][len(prior_messages):]
+            history.add_messages(new_messages)
         except Exception as e:
             print(f"Stream error: {e}")
             socketio.emit("chat_token", {"text": "\nAn error occurred while processing your request."}, to=sid)

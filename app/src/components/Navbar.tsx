@@ -27,8 +27,11 @@ interface Thread {
 interface NavbarProps {
   selectedRepo: string;
   setSelectedRepo: (repo: string) => void;
+  selectedThread: string;
+  setSelectedThread: (thread: string) => void;
+  refreshKey?: number;
 }
-export const Navbar = ({ selectedRepo, setSelectedRepo }: NavbarProps) => {
+export const Navbar = ({ selectedRepo, setSelectedRepo, selectedThread, setSelectedThread, refreshKey }: NavbarProps) => {
   const [repos, setRepos] = useState<LoadedRepo[]>([]);
   const [reposLoading, setReposLoading] = useState(false);
   const [threads, setThreads] = useState<Thread[]>([]);
@@ -57,7 +60,7 @@ export const Navbar = ({ selectedRepo, setSelectedRepo }: NavbarProps) => {
       .then((data: Thread[]) => setThreads(data))
       .catch(console.error)
       .finally(() => setThreadsLoading(false));
-  }, [selectedRepo]);
+  }, [selectedRepo, refreshKey]);
 
   const repoOptions = repos.map((r) => ({
     value: r.repo_name,
@@ -86,7 +89,7 @@ export const Navbar = ({ selectedRepo, setSelectedRepo }: NavbarProps) => {
           variant="outline"
           color="violet"
           size="xs"
-          onClick={() => console.log("init new chat")}
+          onClick={() => setSelectedThread("")}
         >
           New Chat +
         </Button>
@@ -100,7 +103,8 @@ export const Navbar = ({ selectedRepo, setSelectedRepo }: NavbarProps) => {
                 key={thread.session_id}
                 label={thread.name}
                 description={new Date(thread.last_updated).toLocaleDateString()}
-                onClick={() => console.log("load thread", thread.session_id)}
+                active={thread.session_id === selectedThread}
+                onClick={() => setSelectedThread(thread.session_id)}
               />
             ))}
           </Stack>

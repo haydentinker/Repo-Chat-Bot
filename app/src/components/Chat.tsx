@@ -52,9 +52,11 @@ interface Message {
 interface ChatProps {
   socket: Socket;
   selectedRepo: string;
+  selectedThread: string;
+  onNewThread?: () => void;
 }
 
-export default function Chat({ socket, selectedRepo }: ChatProps) {
+export default function Chat({ socket, selectedRepo, selectedThread, onNewThread }: ChatProps) {
   const theme = useMantineTheme();
   const [thread, setThread] = useState("");
   const [input, setInput] = useState("");
@@ -65,6 +67,21 @@ export default function Chat({ socket, selectedRepo }: ChatProps) {
   const currentMessageRef = useRef("");
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const mockIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    if (!selectedThread) {
+      setMessages([]);
+      setThread("");
+      return;
+    }
+    setThread(selectedThread);
+    fetch(`http://localhost:5000/user/thread/${selectedThread}/messages`, {
+      credentials: "include",
+    })
+      .then((res) => res.json())
+      .then((data: Message[]) => setMessages(data))
+      .catch(console.error);
+  }, [selectedThread]);
 
   useEffect(() => {
     const handleToken = ({ text }: { text: string }) => {
@@ -87,7 +104,10 @@ export default function Chat({ socket, selectedRepo }: ChatProps) {
       status: string;
       session_id: string;
     }) => {
-      setThread(session_id);
+      setThread((prev) => {
+        if (!prev) onNewThread?.();
+        return session_id;
+      });
       setStatus("idle");
       currentMessageRef.current = "";
     };
@@ -180,12 +200,18 @@ export default function Chat({ socket, selectedRepo }: ChatProps) {
                 height: 200,
               }}
             >
-              <Text c="dimmed" size="sm">
-                Ask anything about{" "}
-                <Text span fw={600} c="violet">
-                  {selectedRepo}
+              {selectedRepo ? (
+                <Text c="dimmed" size="sm">
+                  Ask anything about{" "}
+                  <Text span fw={600} c="violet">
+                    {selectedRepo}
+                  </Text>
                 </Text>
-              </Text>
+              ) : (
+                <Text size="sm" span fw={600} c="violet">
+                  Select or load a repo to begin chatting
+                </Text>
+              )}
             </Box>
           )}
 
@@ -252,7 +278,7 @@ export default function Chat({ socket, selectedRepo }: ChatProps) {
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) sendMessage();
               }}
-              disabled={status !== "idle"}
+              disabled={status !== "idle" || !selectedRepo}
               size="md"
               radius="xl"
               styles={{
@@ -264,7 +290,7 @@ export default function Chat({ socket, selectedRepo }: ChatProps) {
             />
             <Button
               onClick={sendMessage}
-              disabled={status !== "idle"}
+              disabled={status !== "idle" || !selectedRepo}
               size="md"
               radius="xl"
               color="violet"

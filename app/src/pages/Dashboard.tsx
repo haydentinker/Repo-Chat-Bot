@@ -1,8 +1,10 @@
 import {
   AppShell,
+  Box,
   Burger,
   Button,
   Group,
+  Image,
   Modal,
   Radio,
   Text,
@@ -40,6 +42,8 @@ export default function Dashboard() {
   const [ingesting, setIngesting] = useState(false);
   const [ingestResult, setIngestResult] = useState<string | null>(null);
   const [selectedRepo, setSelectedRepo] = useState("");
+  const [selectedThread, setSelectedThread] = useState("");
+  const [threadRefreshKey, setThreadRefreshKey] = useState(0);
   const { toggleColorScheme } = useMantineColorScheme();
   const colorScheme = useComputedColorScheme("dark");
 
@@ -107,9 +111,12 @@ export default function Dashboard() {
                 hiddenFrom="sm"
                 size="sm"
               />
-              <Text fw={600} size="sm">
-                Repo Chat
-              </Text>
+              <Box
+                bg={colorScheme === "dark" ? "white" : "transparent"}
+                style={{ borderRadius: 8, padding: colorScheme === "dark" ? "4px 10px" : 0, margin: "8px 0 10px" }}
+              >
+                <Image src="/logo.png" h={38} fit="contain" />
+              </Box>
             </Group>
             <Group>
               <Button
@@ -118,7 +125,7 @@ export default function Dashboard() {
                 onClick={openModal}
                 size="sm"
               >
-                Load repository
+                Load a repository
               </Button>
               <ActionIcon
                 variant="subtle"
@@ -135,10 +142,18 @@ export default function Dashboard() {
           <Navbar
             selectedRepo={selectedRepo}
             setSelectedRepo={setSelectedRepo}
+            selectedThread={selectedThread}
+            setSelectedThread={setSelectedThread}
+            refreshKey={threadRefreshKey}
           />
         </AppShell.Navbar>
         <AppShell.Main>
-          <Chat socket={socket} selectedRepo={selectedRepo} />
+          <Chat
+            socket={socket}
+            selectedRepo={selectedRepo}
+            selectedThread={selectedThread}
+            onNewThread={() => setThreadRefreshKey((k) => k + 1)}
+          />
         </AppShell.Main>
       </AppShell>
 
