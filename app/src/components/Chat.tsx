@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { API_URL } from "../lib/api";
 import {
   TextInput,
   Button,
@@ -62,6 +63,7 @@ export default function Chat({ socket, selectedRepo, selectedThread, onNewThread
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
   const [status, setStatus] = useState<ChatStatus>("idle");
+  const [loadingThread, setLoadingThread] = useState(false);
   const [mockMode, setMockMode] = useState(false);
 
   const currentMessageRef = useRef("");
@@ -75,12 +77,14 @@ export default function Chat({ socket, selectedRepo, selectedThread, onNewThread
       return;
     }
     setThread(selectedThread);
-    fetch(`http://localhost:5000/user/thread/${selectedThread}/messages`, {
+    setLoadingThread(true);
+    fetch(`${API_URL}/user/thread/${selectedThread}/messages`, {
       credentials: "include",
     })
       .then((res) => res.json())
       .then((data: Message[]) => setMessages(data))
-      .catch(console.error);
+      .catch(console.error)
+      .finally(() => setLoadingThread(false));
   }, [selectedThread]);
 
   useEffect(() => {
@@ -191,7 +195,20 @@ export default function Chat({ socket, selectedRepo, selectedThread, onNewThread
     >
       <ScrollArea style={{ flex: 1 }} px="md" pb="md">
         <Stack gap="md" py="md" style={{ maxWidth: 900, margin: "0 auto" }}>
-          {messages.length === 0 && (
+          {loadingThread && (
+            <Box
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                height: 200,
+              }}
+            >
+              <Loader size="sm" color="violet" />
+            </Box>
+          )}
+
+          {!loadingThread && messages.length === 0 && (
             <Box
               style={{
                 display: "flex",
@@ -215,7 +232,7 @@ export default function Chat({ socket, selectedRepo, selectedThread, onNewThread
             </Box>
           )}
 
-          {messages.map((msg, index) => (
+          {!loadingThread && messages.map((msg, index) => (
             <Box
               key={`${index}-${msg.role}`}
               style={{

@@ -12,7 +12,7 @@ from pymongo import MongoClient, ReturnDocument
 from langchain_core.messages import HumanMessage
 from openai import OpenAI
 from agents.ragAgent import baseAgent, get_thread_history
-from helpers.ingestRepo import ingest_repo
+from helpers.ingestRepo import ingest_repo, get_latest_commit_sha
 from flask_socketio import SocketIO, emit
 from bson import ObjectId
 from datetime import datetime, UTC
@@ -84,7 +84,7 @@ def load_user(user_id):
 CORS(
     app,
     supports_credentials=True,
-    origins=["http://localhost:5173"],
+    origins=[os.getenv("FRONTEND_URL", "http://localhost:5173")],
     allow_headers=["Content-Type", "Authorization"],
     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"]
 )
@@ -148,8 +148,8 @@ def auth_github():
 @app.route("/auth/success")
 def github_login_success():
     if not current_user.is_authenticated:
-        return redirect("http://localhost:3000")
-    return redirect("http://localhost:5173/dashboard")
+        return redirect(os.getenv("FRONTEND_URL", "http://localhost:5173"))
+    return redirect(f"{os.getenv('FRONTEND_URL', 'http://localhost:5173')}/dashboard")
 
 
 @app.route("/logout")
@@ -157,6 +157,18 @@ def github_login_success():
 def logout():
     logout_user()
     return jsonify({"status": "logged out"})
+
+
+@app.route("/auth/status")
+def auth_status():
+    if not current_user.is_authenticated:
+        return jsonify({"authenticated": False})
+    return jsonify({
+        "authenticated": True,
+        "github_id": current_user.github_id,
+        "username": current_user.username,
+        "email": current_user.email,
+    })
 
 
 @app.route("/me")
@@ -173,7 +185,7 @@ def me():
 
 @app.before_request
 def check_authentication():
-    public_endpoints = {'github.login', 'github.authorized', 'auth_github', 'github_login_success', 'static'}
+    public_endpoints = {'github.login', 'github.authorized', 'auth_github', 'github_login_success', 'static', 'auth_status'}
 
     if request.endpoint in public_endpoints or request.method == "OPTIONS":
         return
@@ -188,6 +200,29 @@ def user_repos():
     )
     return jsonify(list(docs))
 
+
+@app.route("/user/repo/<path:repo_name>/status")
+def repo_status(repo_name):
+    repo_doc = repos_collection.find_one(
+        {"github_id": current_user.github_id, "repo_name": repo_name},
+        {"_id": 0, "last_commit_sha": 1, "branch": 1},
+    )
+    if not repo_doc:
+        return jsonify({"error": "Repo not found"}), 404
+    stored_sha = repo_doc.get("last_commit_sha")
+    branch = repo_doc.get("branch", "main")
+    try:
+        github_token = github.token["access_token"]
+        latest_sha = get_latest_commit_sha(repo_name, branch, github_token)
+        up_to_date = stored_sha == latest_sha
+    except Exception as e:
+        return jsonify({"error": str(e)}), 502
+    return jsonify({
+        "up_to_date": up_to_date,
+        "stored_sha": stored_sha[:7] if stored_sha else None,
+        "latest_sha": latest_sha[:7],
+    })
+
 @app.route("/user/threads")
 def user_threads():
     repo_name = request.args.get("repo_name")
@@ -198,6 +233,33 @@ def user_threads():
         {"_id": 0, "github_id": 0},
     ).sort("last_updated", -1)
     return jsonify(list(docs))
+
+
+@app.route("/user/thread/<session_id>/name", methods=["PATCH"])
+def rename_thread(session_id):
+    data = request.get_json(silent=True) or {}
+    new_name = (data.get("name") or "").strip()
+    if not new_name:
+        return jsonify({"error": "Missing 'name'"}), 400
+    result = thread_collection.update_one(
+        {"session_id": session_id, "github_id": current_user.github_id},
+        {"$set": {"name": new_name}},
+    )
+    if result.matched_count == 0:
+        return jsonify({"error": "Thread not found"}), 404
+    return jsonify({"session_id": session_id, "name": new_name})
+
+
+@app.route("/user/thread/<session_id>", methods=["DELETE"])
+def delete_thread(session_id):
+    result = thread_collection.delete_one({
+        "session_id": session_id,
+        "github_id": current_user.github_id,
+    })
+    if result.deleted_count == 0:
+        return jsonify({"error": "Thread not found"}), 404
+    get_thread_history(session_id).clear()
+    return jsonify({"deleted": session_id})
 
 
 @app.route("/user/thread/<session_id>/messages")

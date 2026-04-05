@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
+import { API_URL } from "../lib/api";
 
 type User = {
   github_id: string;
@@ -30,12 +31,9 @@ export default function AuthProvider({
   const [loading, setLoading] = useState<boolean>(true);
 
   useEffect(() => {
-    fetch("http://localhost:5000/me", { credentials: "include" })
-      .then(async (res) => {
-        if (!res.ok) throw new Error("Not authenticated");
-        return res.json();
-      })
-      .then((data: User) => setUser(data))
+    fetch(`${API_URL}/auth/status`, { credentials: "include" })
+      .then((res) => res.json())
+      .then((data: User) => setUser(data.authenticated ? data : null))
       .catch(() => setUser(null))
       .finally(() => setLoading(false));
   }, []);
