@@ -1,7 +1,8 @@
+import logging
 import os
 os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
 from flask import Flask, redirect, request, jsonify
-from flask_cors import CORS, cross_origin
+from flask_cors import CORS
 from flask_dance.contrib.github import make_github_blueprint, github
 from flask_dance.consumer import oauth_authorized
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
@@ -11,24 +12,45 @@ from dotenv import load_dotenv
 from pymongo import MongoClient, ReturnDocument
 from langchain_core.messages import HumanMessage
 from openai import OpenAI
-from agents.ragAgent import baseAgent, get_thread_history
+from agents.ragAgent import baseAgent, get_thread_history, cache_namespace
 from helpers.ingestRepo import ingest_repo, get_latest_commit_sha
 from flask_socketio import SocketIO, emit
 from bson import ObjectId
 from datetime import datetime, UTC
 load_dotenv()
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+THREADS_PAGE_LIMIT = 20
+
 
 class TokenStreamHandler(BaseCallbackHandler):
-    """Forwards each LLM token to the correct SocketIO client."""
+    """Forwards each LLM token to the correct SocketIO client and collects retrieved sources."""
 
     def __init__(self, sid: str):
         self.sid = sid
+        self._sources: set[str] = set()
 
-    def on_llm_new_token(self, token: str, **kwargs) -> None:
+    def on_llm_new_token(self, token: str, **__) -> None:
         if token:
             socketio.emit("chat_token", {"text": token}, to=self.sid)
             socketio.sleep(0)
+
+    def on_tool_end(self, output, **__) -> None:
+        output_str = str(output) if not isinstance(output, str) else output
+        for line in output_str.split("\n"):
+            if line.startswith("__SOURCES__:"):
+                sources_part = line[len("__SOURCES__:"):]
+                for src in sources_part.split(","):
+                    src = src.strip()
+                    if src:
+                        self._sources.add(src)
+                break
+
+    @property
+    def sources(self) -> list[str]:
+        return sorted(self._sources)
 
 
 app = Flask("Github-Repo-Analysis-Bot")
@@ -61,13 +83,12 @@ blueprint = make_github_blueprint(
 app.register_blueprint(blueprint, url_prefix="/login")
 
 
-
 github_client_id = os.getenv("GITHUB_OAUTH_CLIENT_ID")
 github_client_secret = os.getenv("GITHUB_OAUTH_CLIENT_SECRET")
 model = "text-embedding-3-small"
 openai_client = OpenAI()
 mongo_client = MongoClient(os.getenv("MONGODB_CONNECTION_STRING"))
-thread_collection =mongo_client[os.getenv("MONGODB_DB_NAME")]['threads']
+thread_collection = mongo_client[os.getenv("MONGODB_DB_NAME")]['threads']
 collection = mongo_client[os.getenv("MONGODB_DB_NAME")]['vectors']
 users_collection = mongo_client[os.getenv("MONGODB_DB_NAME")]["users"]
 repos_collection = mongo_client[os.getenv("MONGODB_DB_NAME")]["repos"]
@@ -118,17 +139,16 @@ def github_logged_in(blueprint, token):
 
 @app.route("/users/repos", methods=["GET"])
 def list_repos():
-    
     resp = github.get("/user/repos")
     if not resp.ok:
         return "Error fetching repos", 500
-        
+
     repos = resp.json()
     return {"repos": repos}
 
 def get_repo_id(repo_url):
     return repo_url.replace("https://github.com/", "").replace(".git", "")
-    
+
 @app.route("/ingest", methods=["POST"])
 def ingest():
     data = request.get_json()
@@ -159,28 +179,60 @@ def logout():
     return jsonify({"status": "logged out"})
 
 
-@app.route("/auth/status")
-def auth_status():
-    if not current_user.is_authenticated:
-        return jsonify({"authenticated": False})
-    return jsonify({
+def _user_payload(user_doc: dict | None = None) -> dict:
+    """Build the authenticated user JSON payload, including plan + credits."""
+    doc = user_doc or users_collection.find_one({"_id": ObjectId(current_user.id)}) or {}
+    plan = doc.get("plan")  # None means no plan selected yet
+    credits_remaining = doc.get("credits_remaining")
+    if credits_remaining is None and plan == "free":
+        credits_remaining = FREE_PLAN_CREDITS
+    return {
         "authenticated": True,
         "github_id": current_user.github_id,
         "username": current_user.username,
         "email": current_user.email,
-    })
+        "plan": plan,
+        "credits_remaining": credits_remaining,
+    }
+
+
+FREE_PLAN_CREDITS = int(os.getenv("FREE_PLAN_CREDITS", "100"))
+
+
+@app.route("/auth/status")
+def auth_status():
+    if not current_user.is_authenticated:
+        return jsonify({"authenticated": False})
+    return jsonify(_user_payload())
 
 
 @app.route("/me")
 def me():
     if not current_user.is_authenticated:
         return jsonify({"authenticated": False}), 401
-    return jsonify({
-        "github_id": current_user.github_id,
-        "username": current_user.username,
-        "email": current_user.email,
-        "authenticated": True,
-    })
+    return jsonify(_user_payload())
+
+
+@app.route("/user/plan/activate", methods=["POST"])
+def activate_plan():
+    """Activate a plan for the current user (stub — wire to Stripe for paid tiers)."""
+    data = request.get_json(silent=True) or {}
+    plan = data.get("plan")
+    if plan not in ("free", "pro", "team"):
+        return jsonify({"error": "Invalid plan. Must be one of: free, pro, team"}), 400
+
+    update: dict = {"plan": plan}
+    if plan == "free":
+        update["credits_remaining"] = FREE_PLAN_CREDITS
+    else:
+        # Pro/Team: treated as unlimited (-1) until Stripe billing is wired
+        update["credits_remaining"] = -1
+
+    users_collection.update_one(
+        {"_id": ObjectId(current_user.id)},
+        {"$set": update},
+    )
+    return jsonify(_user_payload())
 
 
 @app.before_request
@@ -192,6 +244,7 @@ def check_authentication():
 
     if not current_user.is_authenticated:
         return jsonify({"error": "Not authenticated"}), 401
+
 @app.route("/user/loaded/repos")
 def user_repos():
     docs = repos_collection.find(
@@ -228,11 +281,23 @@ def user_threads():
     repo_name = request.args.get("repo_name")
     if not repo_name:
         return jsonify({"error": "Missing 'repo_name' query parameter"}), 400
-    docs = thread_collection.find(
-        {"github_id": current_user.github_id, "repo_name": repo_name},
-        {"_id": 0, "github_id": 0},
-    ).sort("last_updated", -1)
-    return jsonify(list(docs))
+
+    try:
+        page = max(1, int(request.args.get("page", "1")))
+        limit = min(50, max(1, int(request.args.get("limit", str(THREADS_PAGE_LIMIT)))))
+    except ValueError:
+        return jsonify({"error": "Invalid pagination parameters"}), 400
+
+    skip = (page - 1) * limit
+    query = {"github_id": current_user.github_id, "repo_name": repo_name}
+    total = thread_collection.count_documents(query)
+    docs = list(
+        thread_collection.find(query, {"_id": 0, "github_id": 0})
+        .sort("last_updated", -1)
+        .skip(skip)
+        .limit(limit)
+    )
+    return jsonify({"threads": docs, "total": total, "page": page, "limit": limit})
 
 
 @app.route("/user/thread/<session_id>/name", methods=["PATCH"])
@@ -285,6 +350,7 @@ def thread_messages(session_id):
         messages.append({"role": role, "content": content})
 
     return jsonify(messages)
+
 @socketio.on("message")
 def handle_message(data):
     message = data.get("message")
@@ -297,6 +363,19 @@ def handle_message(data):
     if not message or not repo_name:
         emit("response", {"error": "Both 'message' and 'repo_name' are required"})
         return
+
+    # Credit gate: free-plan users are limited
+    user_plan = None
+    if current_user.is_authenticated:
+        user_doc = users_collection.find_one(
+            {"_id": ObjectId(current_user.id)},
+            {"plan": 1, "credits_remaining": 1},
+        )
+        user_plan = (user_doc or {}).get("plan")
+        user_credits = (user_doc or {}).get("credits_remaining", FREE_PLAN_CREDITS)
+        if user_plan == "free" and isinstance(user_credits, int) and user_credits <= 0:
+            emit("response", {"error": "credits_exhausted"})
+            return
 
     if session_id:
         thread_collection.update_one(
@@ -314,19 +393,25 @@ def handle_message(data):
             "name": message
         })
 
-    user_context = {
-        "configurable": {
-            "github_id": github_id,
-            "repo_name": repo_name,
-            "session_id": session_id
-        }
-    }
+    ns = f"{github_id}::{repo_name}" if github_id and repo_name else ""
 
     def stream_task():
+        token = cache_namespace.set(ns)
+        handler = TokenStreamHandler(sid)
+        # Deduct 1 credit for free-plan users before running the agent
+        if user_plan == "free":
+            users_collection.update_one(
+                {"_id": ObjectId(current_user.id), "credits_remaining": {"$gt": 0}},
+                {"$inc": {"credits_remaining": -1}},
+            )
         try:
             config = RunnableConfig(
-                callbacks=[TokenStreamHandler(sid)],
-                configurable=user_context["configurable"],
+                callbacks=[handler],
+                configurable={
+                    "github_id": github_id,
+                    "repo_name": repo_name,
+                    "session_id": session_id,
+                },
             )
             history = get_thread_history(session_id)
             prior_messages = history.messages
@@ -335,10 +420,15 @@ def handle_message(data):
             new_messages = result["messages"][len(prior_messages):]
             history.add_messages(new_messages)
         except Exception as e:
-            print(f"Stream error: {e}")
+            logger.exception("Stream error for session %s: %s", session_id, e)
             socketio.emit("chat_token", {"text": "\nAn error occurred while processing your request."}, to=sid)
         finally:
-            socketio.emit("stream_complete", {"status": "done", "session_id": session_id}, to=sid)
+            cache_namespace.reset(token)
+            socketio.emit(
+                "stream_complete",
+                {"status": "done", "session_id": session_id, "sources": handler.sources},
+                to=sid,
+            )
 
     socketio.start_background_task(stream_task)
 

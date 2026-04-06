@@ -29,14 +29,21 @@ import {
 } from "@tabler/icons-react";
 import { Navbar } from "../components/Navbar";
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { io } from "socket.io-client";
 import Chat from "../components/Chat";
+import UpgradeModal from "../components/UpgradeModal";
 import { API_URL } from "../lib/api";
 import Logo from "../components/Logo";
+import { useAuth } from "../providers/AuthProvider";
 
 const socket = io(API_URL, {
   transports: ["websocket"],
   withCredentials: true,
+  reconnection: true,
+  reconnectionAttempts: 5,
+  reconnectionDelay: 1000,
+  reconnectionDelayMax: 5000,
 });
 
 interface Repo {
@@ -59,10 +66,15 @@ interface RepoStatus {
 }
 
 export default function Dashboard() {
+  const { user } = useAuth();
+  const navigate = useNavigate();
+  const [socketConnected, setSocketConnected] = useState(socket.connected);
   const [opened, { toggle }] = useDisclosure(false);
   const [modalOpened, { open: openModal, close: closeModal }] =
     useDisclosure(false);
   const [welcomeOpened, { open: openWelcome, close: closeWelcome }] =
+    useDisclosure(false);
+  const [upgradeOpened, { open: openUpgrade, close: closeUpgrade }] =
     useDisclosure(false);
   const [newRepo, setNewRepo] = useState("");
   const [repos, setRepos] = useState<Repo[]>([]);
@@ -81,6 +93,24 @@ export default function Dashboard() {
   const [threadRefreshKey, setThreadRefreshKey] = useState(0);
   const { toggleColorScheme } = useMantineColorScheme();
   const colorScheme = useComputedColorScheme("dark");
+
+  // Redirect users who haven't selected a plan yet
+  useEffect(() => {
+    if (user && user.plan === null) {
+      navigate("/plans");
+    }
+  }, [user, navigate]);
+
+  useEffect(() => {
+    const onConnect = () => setSocketConnected(true);
+    const onDisconnect = () => setSocketConnected(false);
+    socket.on("connect", onConnect);
+    socket.on("disconnect", onDisconnect);
+    return () => {
+      socket.off("connect", onConnect);
+      socket.off("disconnect", onDisconnect);
+    };
+  }, []);
 
   useEffect(() => {
     fetch(`${API_URL}/user/loaded/repos`, { credentials: "include" })
@@ -229,6 +259,29 @@ export default function Dashboard() {
               <Logo withText height={36} />
             </Group>
             <Group>
+              {user?.plan === "free" && user.credits_remaining !== null && (
+                <Tooltip label="Free plan messages remaining this month" withArrow>
+                  <Badge
+                    size="xs"
+                    color={user.credits_remaining <= 10 ? "red" : user.credits_remaining <= 30 ? "orange" : "teal"}
+                    variant="light"
+                    style={{ cursor: "pointer" }}
+                    onClick={openUpgrade}
+                  >
+                    {user.credits_remaining} credits
+                  </Badge>
+                </Tooltip>
+              )}
+              <Tooltip label={socketConnected ? "Connected" : "Disconnected — reconnecting…"} withArrow>
+                <Badge
+                  size="xs"
+                  color={socketConnected ? "teal" : "orange"}
+                  variant="dot"
+                  style={{ cursor: "default" }}
+                >
+                  {socketConnected ? "Live" : "Offline"}
+                </Badge>
+              </Tooltip>
               <Button
                 variant="light"
                 color="violet"
@@ -286,6 +339,7 @@ export default function Dashboard() {
             selectedRepo={selectedRepo}
             selectedThread={selectedThread}
             onNewThread={() => setThreadRefreshKey((k) => k + 1)}
+            onUpgradeNeeded={openUpgrade}
           />
         </AppShell.Main>
       </AppShell>
@@ -520,6 +574,13 @@ export default function Dashboard() {
           </Group>
         </Stack>
       </Modal>
+
+      <UpgradeModal
+        opened={upgradeOpened}
+        onClose={closeUpgrade}
+        creditsRemaining={user?.credits_remaining ?? null}
+        reason={user?.credits_remaining === 0 ? "exhausted" : "low"}
+      />
     </>
   );
 }

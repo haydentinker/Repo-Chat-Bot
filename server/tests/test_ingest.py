@@ -33,13 +33,21 @@ class TestHashText:
 
 class TestIsSupported:
     @pytest.mark.parametrize("path", [
+        # Original set
         "README.md", "main.py", "index.js", "App.ts", "notes.txt", "package.json",
+        # Newly added
+        "Component.jsx", "Component.tsx", "styles.css", "config.yaml", "config.yml",
+        "Cargo.toml", "setup.ini", "script.sh", "main.go", "lib.rs",
+        "Main.java", "main.c", "main.cpp", "main.h", "Program.cs",
+        "index.php", "App.swift", "Main.kt", "schema.sql", "main.tf",
+        "index.mdx", "docs.rst", "module.mjs",
     ])
     def test_supported_extensions(self, path):
         assert is_supported(path) is True
 
     @pytest.mark.parametrize("path", [
-        "image.png", "data.csv", "archive.zip", "binary.exe", "style.css",
+        "image.png", "data.csv", "archive.zip", "binary.exe",
+        "photo.jpg", "font.woff2", "video.mp4",
     ])
     def test_unsupported_extensions(self, path):
         assert is_supported(path) is False

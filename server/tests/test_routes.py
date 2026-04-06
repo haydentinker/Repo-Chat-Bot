@@ -144,3 +144,86 @@ class TestLogout:
 
         assert resp.status_code == 200
         mock_logout.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# /user/threads (paginated)
+# ---------------------------------------------------------------------------
+
+class TestUserThreads:
+    def _make_threads(self, n: int):
+        from datetime import datetime, UTC
+        return [
+            {
+                "session_id": f"sess-{i}",
+                "repo_name": "owner/repo",
+                "name": f"Thread {i}",
+                "last_updated": datetime.now(UTC).isoformat(),
+                "created_at": datetime.now(UTC).isoformat(),
+            }
+            for i in range(n)
+        ]
+
+    def test_missing_repo_name_returns_400(self, client):
+        c, app_module = client
+        user = _mock_user()
+        with patch("app.current_user", user):
+            resp = c.get("/user/threads")
+        assert resp.status_code == 400
+        assert "repo_name" in resp.get_json()["error"]
+
+    def test_returns_paginated_structure(self, client):
+        c, app_module = client
+        user = _mock_user()
+        threads = self._make_threads(5)
+
+        with (
+            patch("app.current_user", user),
+            patch("app.thread_collection") as mock_col,
+        ):
+            mock_col.count_documents.return_value = 5
+            mock_col.find.return_value.sort.return_value.skip.return_value.limit.return_value = iter(threads)
+            resp = c.get("/user/threads?repo_name=owner/repo")
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "threads" in data
+        assert "total" in data
+        assert "page" in data
+        assert "limit" in data
+        assert data["total"] == 5
+        assert data["page"] == 1
+
+    def test_page_2_skips_correctly(self, client):
+        c, app_module = client
+        user = _mock_user()
+
+        with (
+            patch("app.current_user", user),
+            patch("app.thread_collection") as mock_col,
+        ):
+            mock_col.count_documents.return_value = 25
+            mock_col.find.return_value.sort.return_value.skip.return_value.limit.return_value = iter([])
+            c.get("/user/threads?repo_name=owner/repo&page=2&limit=10")
+            # skip should have been called with 10 (page 2, limit 10)
+            mock_col.find.return_value.sort.return_value.skip.assert_called_with(10)
+
+    def test_invalid_page_returns_400(self, client):
+        c, app_module = client
+        user = _mock_user()
+        with patch("app.current_user", user):
+            resp = c.get("/user/threads?repo_name=owner/repo&page=notanumber")
+        assert resp.status_code == 400
+
+    def test_limit_capped_at_50(self, client):
+        c, app_module = client
+        user = _mock_user()
+
+        with (
+            patch("app.current_user", user),
+            patch("app.thread_collection") as mock_col,
+        ):
+            mock_col.count_documents.return_value = 0
+            mock_col.find.return_value.sort.return_value.skip.return_value.limit.return_value = iter([])
+            c.get("/user/threads?repo_name=owner/repo&limit=999")
+            mock_col.find.return_value.sort.return_value.skip.return_value.limit.assert_called_with(50)

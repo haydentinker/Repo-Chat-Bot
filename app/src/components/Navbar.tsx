@@ -15,6 +15,8 @@ import { IconPencil, IconTrash } from "@tabler/icons-react";
 import { useEffect, useRef, useState } from "react";
 import { API_URL } from "../lib/api";
 
+const THREADS_PER_PAGE = 20;
+
 interface LoadedRepo {
   repo_name: string;
   branch: string;
@@ -30,6 +32,13 @@ interface Thread {
   created_at: string;
 }
 
+interface ThreadsResponse {
+  threads: Thread[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
 interface NavbarProps {
   selectedRepo: string;
   setSelectedRepo: (repo: string) => void;
@@ -41,41 +50,81 @@ interface NavbarProps {
 export const Navbar = ({ selectedRepo, setSelectedRepo, selectedThread, setSelectedThread, refreshKey }: NavbarProps) => {
   const [repos, setRepos] = useState<LoadedRepo[]>([]);
   const [reposLoading, setReposLoading] = useState(false);
+  const [reposError, setReposError] = useState<string | null>(null);
   const [threads, setThreads] = useState<Thread[]>([]);
   const [threadsLoading, setThreadsLoading] = useState(false);
+  const [threadsError, setThreadsError] = useState<string | null>(null);
+  const [threadTotal, setThreadTotal] = useState(0);
+  const [threadPage, setThreadPage] = useState(1);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     setReposLoading(true);
+    setReposError(null);
     fetch(`${API_URL}/user/loaded/repos`, { credentials: "include" })
-      .then((res) => res.json())
+      .then((res) => {
+        if (!res.ok) throw new Error("Failed to load repositories");
+        return res.json();
+      })
       .then((data: LoadedRepo[]) => setRepos(data))
-      .catch(console.error)
+      .catch((err: Error) => setReposError(err.message))
       .finally(() => setReposLoading(false));
   }, []);
 
   useEffect(() => {
     if (!selectedRepo) {
       setThreads([]);
+      setThreadTotal(0);
+      setThreadPage(1);
       return;
     }
     setThreadsLoading(true);
+    setThreadsError(null);
+    setThreadPage(1);
     fetch(
-      `${API_URL}/user/threads?repo_name=${encodeURIComponent(selectedRepo)}`,
+      `${API_URL}/user/threads?repo_name=${encodeURIComponent(selectedRepo)}&page=1&limit=${THREADS_PER_PAGE}`,
       { credentials: "include" },
     )
-      .then((res) => res.json())
-      .then((data: Thread[]) => setThreads(data))
-      .catch(console.error)
+      .then((res) => {
+        if (!res.ok) throw new Error("Failed to load threads");
+        return res.json();
+      })
+      .then((data: ThreadsResponse) => {
+        setThreads(data.threads);
+        setThreadTotal(data.total);
+      })
+      .catch((err: Error) => setThreadsError(err.message))
       .finally(() => setThreadsLoading(false));
   }, [selectedRepo, refreshKey]);
 
   useEffect(() => {
     if (editingId) inputRef.current?.focus();
   }, [editingId]);
+
+  const loadMoreThreads = () => {
+    const nextPage = threadPage + 1;
+    setLoadingMore(true);
+    fetch(
+      `${API_URL}/user/threads?repo_name=${encodeURIComponent(selectedRepo)}&page=${nextPage}&limit=${THREADS_PER_PAGE}`,
+      { credentials: "include" },
+    )
+      .then((res) => {
+        if (!res.ok) throw new Error("Failed to load more threads");
+        return res.json();
+      })
+      .then((data: ThreadsResponse) => {
+        setThreads((prev) => [...prev, ...data.threads]);
+        setThreadPage(nextPage);
+        setThreadTotal(data.total);
+      })
+      .catch((err: Error) => setThreadsError(err.message))
+      .finally(() => setLoadingMore(false));
+  };
 
   const startEdit = (thread: Thread, e: React.MouseEvent) => {
     e.preventDefault();
@@ -88,15 +137,18 @@ export const Navbar = ({ selectedRepo, setSelectedRepo, selectedThread, setSelec
     e.preventDefault();
     e.stopPropagation();
     setDeletingId(session_id);
+    setDeleteError(null);
     fetch(`${API_URL}/user/thread/${session_id}`, {
       method: "DELETE",
       credentials: "include",
     })
-      .then(() => {
+      .then((res) => {
+        if (!res.ok) throw new Error("Failed to delete thread");
         setThreads((prev) => prev.filter((t) => t.session_id !== session_id));
+        setThreadTotal((prev) => prev - 1);
         if (selectedThread === session_id) setSelectedThread("");
       })
-      .catch(console.error)
+      .catch((err: Error) => setDeleteError(err.message))
       .finally(() => setDeletingId(null));
   };
 
@@ -112,13 +164,16 @@ export const Navbar = ({ selectedRepo, setSelectedRepo, selectedThread, setSelec
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name }),
     })
-      .then((res) => res.json())
+      .then((res) => {
+        if (!res.ok) throw new Error("Failed to rename thread");
+        return res.json();
+      })
       .then(() => {
         setThreads((prev) =>
           prev.map((t) => (t.session_id === session_id ? { ...t, name } : t))
         );
       })
-      .catch(console.error)
+      .catch((err: Error) => setThreadsError(err.message))
       .finally(() => setEditingId(null));
   };
 
@@ -127,6 +182,8 @@ export const Navbar = ({ selectedRepo, setSelectedRepo, selectedThread, setSelec
     label: r.repo_name,
   }));
 
+  const hasMore = threads.length < threadTotal;
+
   return (
     <>
       <AppShell.Section>
@@ -134,6 +191,9 @@ export const Navbar = ({ selectedRepo, setSelectedRepo, selectedThread, setSelec
           <Text fw={600} size="sm">
             Chats
           </Text>
+          {reposError && (
+            <Text size="xs" c="red">{reposError}</Text>
+          )}
           <Select
             value={selectedRepo}
             onChange={(value) => setSelectedRepo(value ?? "")}
@@ -159,6 +219,14 @@ export const Navbar = ({ selectedRepo, setSelectedRepo, selectedThread, setSelec
       <AppShell.Section grow component={ScrollArea} scrollbarSize={6} scrollHideDelay={500}>
         <Stack gap={2}>
           {threadsLoading && <Loader size="xs" color="violet" mx="auto" mt="sm" />}
+
+          {threadsError && (
+            <Text size="xs" c="red" ta="center" mt="sm">{threadsError}</Text>
+          )}
+
+          {deleteError && (
+            <Text size="xs" c="red" ta="center" mt="sm">{deleteError}</Text>
+          )}
 
           {!threadsLoading && threads.map((thread) =>
             editingId === thread.session_id ? (
@@ -216,7 +284,20 @@ export const Navbar = ({ selectedRepo, setSelectedRepo, selectedThread, setSelec
             )
           )}
 
-          {!threadsLoading && selectedRepo && threads.length === 0 && (
+          {!threadsLoading && hasMore && (
+            <Button
+              variant="subtle"
+              color="violet"
+              size="xs"
+              loading={loadingMore}
+              onClick={loadMoreThreads}
+              mt="xs"
+            >
+              Load more ({threadTotal - threads.length} remaining)
+            </Button>
+          )}
+
+          {!threadsLoading && selectedRepo && threads.length === 0 && !threadsError && (
             <Text size="xs" c="dimmed" ta="center" mt="sm">
               No threads yet
             </Text>

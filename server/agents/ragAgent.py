@@ -1,3 +1,4 @@
+import logging
 import os
 from contextvars import ContextVar
 from datetime import datetime, UTC
@@ -11,8 +12,12 @@ from langchain_core.globals import set_llm_cache
 from langchain.agents import create_agent
 from tools.ragTool import search_mongo
 
+logger = logging.getLogger(__name__)
 
 cache_namespace: ContextVar[str] = ContextVar("cache_namespace", default="")
+
+MESSAGE_HISTORY_LIMIT = int(os.getenv("MESSAGE_HISTORY_LIMIT", "50"))
+CACHE_SIMILARITY_THRESHOLD = float(os.getenv("CACHE_SIMILARITY_THRESHOLD", "0.5"))
 
 
 class NamespacedSemanticCache(MongoDBAtlasSemanticCache):
@@ -52,7 +57,7 @@ class TimestampedMongoDBChatMessageHistory(BaseChatMessageHistory):
         docs = list(
             self.collection.find(
                 {"session_id": self.session_id},
-                {"history": 1, "_id": 1}, 
+                {"history": 1, "_id": 1},
                 sort=[("createdAt", -1), ("_id", -1)],
             ).limit(limit)
         )
@@ -62,12 +67,11 @@ class TimestampedMongoDBChatMessageHistory(BaseChatMessageHistory):
 
     @property
     def messages(self) -> list[BaseMessage]:
-        """Default behavior: return last 50 messages."""
-        return self.get_last_messages(limit=50)
+        """Return last N messages (configurable via MESSAGE_HISTORY_LIMIT)."""
+        return self.get_last_messages(limit=MESSAGE_HISTORY_LIMIT)
 
     def add_messages(self, messages: list[BaseMessage]) -> None:
         """Insert messages with timestamps."""
-        print(messages)
         docs = [
             {
                 "session_id": self.session_id,
@@ -79,6 +83,7 @@ class TimestampedMongoDBChatMessageHistory(BaseChatMessageHistory):
 
         if docs:
             self.collection.insert_many(docs)
+            logger.debug("Stored %d message(s) for session %s", len(docs), self.session_id)
 
     def clear(self) -> None:
         """Delete all messages for this session."""
@@ -109,13 +114,13 @@ baseAgent = create_agent(
 
 EMBEDDING_MODEL = "text-embedding-3-small"
 embeddings = OpenAIEmbeddings(model=EMBEDDING_MODEL)
-set_llm_cache(MongoDBAtlasSemanticCache(
+set_llm_cache(NamespacedSemanticCache(
     connection_string=os.getenv("MONGODB_CONNECTION_STRING"),
     database_name=os.getenv("MONGODB_DB_NAME"),
     collection_name="semantic_cache",
     embedding=embeddings,
     index_name="vector_index",
-    similarity_threshold=0.5,
+    similarity_threshold=CACHE_SIMILARITY_THRESHOLD,
 ))
 
 
@@ -126,5 +131,3 @@ def get_thread_history(session_id: str) -> TimestampedMongoDBChatMessageHistory:
         database_name=os.getenv("MONGODB_DB_NAME"),
         collection_name="thread_store",
     )
-
-

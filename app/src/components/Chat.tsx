@@ -12,7 +12,9 @@ import {
   Loader,
   Switch,
   useMantineTheme,
+  Collapse,
 } from "@mantine/core";
+import { IconChevronDown, IconChevronUp } from "@tabler/icons-react";
 import { Socket } from "socket.io-client";
 
 const MOCK_RESPONSES = [
@@ -48,6 +50,7 @@ type ChatStatus = "idle" | "waiting" | "streaming";
 interface Message {
   role: Role;
   content: string;
+  sources?: string[];
 }
 
 interface ChatProps {
@@ -55,15 +58,40 @@ interface ChatProps {
   selectedRepo: string;
   selectedThread: string;
   onNewThread?: () => void;
+  onUpgradeNeeded?: () => void;
 }
 
-export default function Chat({ socket, selectedRepo, selectedThread, onNewThread }: ChatProps) {
+function SourcesList({ sources }: { sources: string[] }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Box mt={6}>
+      <Group gap={4} style={{ cursor: "pointer" }} onClick={() => setOpen((o) => !o)}>
+        {open ? <IconChevronUp size={11} /> : <IconChevronDown size={11} />}
+        <Text size="xs" c="dimmed">
+          {sources.length} source{sources.length !== 1 ? "s" : ""}
+        </Text>
+      </Group>
+      <Collapse in={open}>
+        <Stack gap={2} mt={4}>
+          {sources.map((src) => (
+            <Text key={src} size="xs" c="dimmed" style={{ fontFamily: "monospace" }}>
+              {src}
+            </Text>
+          ))}
+        </Stack>
+      </Collapse>
+    </Box>
+  );
+}
+
+export default function Chat({ socket, selectedRepo, selectedThread, onNewThread, onUpgradeNeeded }: ChatProps) {
   const theme = useMantineTheme();
   const [thread, setThread] = useState("");
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
   const [status, setStatus] = useState<ChatStatus>("idle");
   const [loadingThread, setLoadingThread] = useState(false);
+  const [threadError, setThreadError] = useState<string | null>(null);
   const [mockMode, setMockMode] = useState(false);
 
   const currentMessageRef = useRef("");
@@ -74,16 +102,21 @@ export default function Chat({ socket, selectedRepo, selectedThread, onNewThread
     if (!selectedThread) {
       setMessages([]);
       setThread("");
+      setThreadError(null);
       return;
     }
     setThread(selectedThread);
     setLoadingThread(true);
+    setThreadError(null);
     fetch(`${API_URL}/user/thread/${selectedThread}/messages`, {
       credentials: "include",
     })
-      .then((res) => res.json())
+      .then((res) => {
+        if (!res.ok) throw new Error("Failed to load thread messages");
+        return res.json();
+      })
       .then((data: Message[]) => setMessages(data))
-      .catch(console.error)
+      .catch((err: Error) => setThreadError(err.message))
       .finally(() => setLoadingThread(false));
   }, [selectedThread]);
 
@@ -96,7 +129,7 @@ export default function Chat({ socket, selectedRepo, selectedThread, onNewThread
       setMessages((prev) => {
         const last = prev[prev.length - 1];
         if (last?.role === "assistant") {
-          return [...prev.slice(0, -1), { role: "assistant", content }];
+          return [...prev.slice(0, -1), { ...last, content }];
         }
         return [...prev, { role: "assistant", content }];
       });
@@ -104,10 +137,21 @@ export default function Chat({ socket, selectedRepo, selectedThread, onNewThread
 
     const handleComplete = ({
       session_id,
+      sources,
     }: {
       status: string;
       session_id: string;
+      sources?: string[];
     }) => {
+      if (sources && sources.length > 0) {
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          if (last?.role === "assistant") {
+            return [...prev.slice(0, -1), { ...last, sources }];
+          }
+          return prev;
+        });
+      }
       setThread((prev) => {
         if (!prev) onNewThread?.();
         return session_id;
@@ -119,6 +163,10 @@ export default function Chat({ socket, selectedRepo, selectedThread, onNewThread
     const handleError = ({ error }: { error: string }) => {
       setStatus("idle");
       currentMessageRef.current = "";
+      if (error === "credits_exhausted") {
+        onUpgradeNeeded?.();
+        return;
+      }
       setMessages((prev) => [
         ...prev,
         { role: "assistant", content: `Error: ${error}` },
@@ -208,7 +256,20 @@ export default function Chat({ socket, selectedRepo, selectedThread, onNewThread
             </Box>
           )}
 
-          {!loadingThread && messages.length === 0 && (
+          {threadError && (
+            <Box
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                height: 200,
+              }}
+            >
+              <Text size="sm" c="red">{threadError}</Text>
+            </Box>
+          )}
+
+          {!loadingThread && !threadError && messages.length === 0 && (
             <Box
               style={{
                 display: "flex",
@@ -260,6 +321,9 @@ export default function Chat({ socket, selectedRepo, selectedThread, onNewThread
                 <Text size="sm" style={{ lineHeight: 1.6 }}>
                   {msg.content}
                 </Text>
+                {msg.role === "assistant" && msg.sources && msg.sources.length > 0 && (
+                  <SourcesList sources={msg.sources} />
+                )}
               </Paper>
             </Box>
           ))}

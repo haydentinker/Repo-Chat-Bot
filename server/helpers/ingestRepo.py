@@ -5,7 +5,7 @@ import requests as http_requests
 from langchain_community.document_loaders import GithubFileLoader
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from pymongo import MongoClient, UpdateOne, ASCENDING
+from pymongo import MongoClient, UpdateOne
 from openai import OpenAI
 from datetime import datetime, UTC
 
@@ -17,7 +17,26 @@ repos_collection = db["repos"]
 
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 EMBEDDING_MODEL = "text-embedding-3-small"
-SUPPORTED_EXTENSIONS = {".md", ".py", ".js", ".ts", ".txt", ".json"}
+CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "1000"))
+CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "200"))
+SUPPORTED_EXTENSIONS = {
+    # Markup / docs
+    ".md", ".mdx", ".rst", ".txt",
+    # Python
+    ".py", ".pyi",
+    # JavaScript / TypeScript
+    ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
+    # Web
+    ".html", ".css", ".scss", ".sass",
+    # Data / config
+    ".json", ".jsonc", ".yaml", ".yml", ".toml", ".ini", ".env.example",
+    # Shell
+    ".sh", ".bash", ".zsh",
+    # Other languages
+    ".go", ".rb", ".rs", ".java", ".c", ".cpp", ".h", ".hpp", ".cs", ".php", ".swift", ".kt",
+    # Infrastructure / tooling
+    ".tf", ".hcl", ".dockerfile", ".sql",
+}
 
 
 def hash_text(text: str) -> str:
@@ -61,7 +80,7 @@ def embed_and_upsert(documents: list, user_id: str, repo_name: str) -> int:
     if not documents:
         return 0
 
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    splitter = RecursiveCharacterTextSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
     chunks = splitter.split_documents(documents)
     if not chunks:
         return 0
