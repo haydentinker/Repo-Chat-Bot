@@ -5,6 +5,7 @@ import PrivateRoute from "./components/PrivateRoute";
 import Home from "./pages/Home";
 import Dashboard from "./pages/Dashboard";
 import Plans from "./pages/Plans";
+import CheckoutSuccess from "./pages/CheckoutSuccess";
 
 export default function App() {
   return (
@@ -26,6 +27,14 @@ export default function App() {
             element={
               <PrivateRoute>
                 <Plans />
+              </PrivateRoute>
+            }
+          />
+          <Route
+            path="/checkout/success"
+            element={
+              <PrivateRoute>
+                <CheckoutSuccess />
               </PrivateRoute>
             }
           />

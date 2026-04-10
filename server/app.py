@@ -1,3 +1,6 @@
+import eventlet
+eventlet.monkey_patch()
+
 import logging
 import os
 os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
@@ -14,10 +17,15 @@ from langchain_core.messages import HumanMessage
 from openai import OpenAI
 from agents.ragAgent import baseAgent, get_thread_history, cache_namespace
 from helpers.ingestRepo import ingest_repo, get_latest_commit_sha
-from flask_socketio import SocketIO, emit
+from flask_socketio import SocketIO, emit, join_room
 from bson import ObjectId
 from datetime import datetime, UTC
+import stripe
 load_dotenv()
+
+stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
+STRIPE_PRO_PRICE_ID = os.getenv("STRIPE_PRO_PRICE_ID")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -157,8 +165,57 @@ def ingest():
 
     repo_name = data["repo_name"]
     github_token = github.token["access_token"]
-    result = ingest_repo(current_user.github_id, repo_name, github_token)
-    return jsonify(result)
+    github_id = current_user.github_id
+    user_room = f"user:{github_id}"
+
+    # Check whether a completed record already exists (needed for error recovery).
+    # A repo with last_commit_sha was previously ingested successfully.
+    existing = repos_collection.find_one(
+        {"github_id": github_id, "repo_name": repo_name},
+        {"last_commit_sha": 1},
+    )
+    had_data = bool(existing and existing.get("last_commit_sha"))
+
+    # Persist "ingesting" status immediately so page reloads can show progress.
+    repos_collection.update_one(
+        {"github_id": github_id, "repo_name": repo_name},
+        {"$set": {"status": "ingesting", "github_id": github_id, "repo_name": repo_name}},
+        upsert=True,
+    )
+
+    def ingest_task():
+        try:
+            result = ingest_repo(github_id, repo_name, github_token)
+            if result.get("status") == "success":
+                repos_collection.update_one(
+                    {"github_id": github_id, "repo_name": repo_name},
+                    {"$set": {"status": "complete"}},
+                )
+            else:
+                _revert_ingesting_status(github_id, repo_name, had_data)
+            socketio.emit("ingest_complete", result, to=user_room)
+        except Exception as e:
+            logger.exception("Ingestion error for %s/%s: %s", github_id, repo_name, e)
+            _revert_ingesting_status(github_id, repo_name, had_data)
+            socketio.emit("ingest_complete", {
+                "status": "error",
+                "repo_name": repo_name,
+                "message": str(e),
+            }, to=user_room)
+
+    socketio.start_background_task(ingest_task)
+    return jsonify({"status": "queued", "repo_name": repo_name})
+
+
+def _revert_ingesting_status(github_id: str, repo_name: str, had_data: bool) -> None:
+    """On ingestion failure, restore a previously-complete repo or remove a new stub."""
+    if had_data:
+        repos_collection.update_one(
+            {"github_id": github_id, "repo_name": repo_name},
+            {"$set": {"status": "complete"}},
+        )
+    else:
+        repos_collection.delete_one({"github_id": github_id, "repo_name": repo_name})
 
 @app.route("/auth/github")
 def auth_github():
@@ -235,6 +292,115 @@ def activate_plan():
     return jsonify(_user_payload())
 
 
+@app.route("/stripe/create-checkout-session", methods=["POST"])
+def create_checkout_session():
+    data = request.get_json(silent=True) or {}
+    plan = data.get("plan", "pro")
+
+    price_id = STRIPE_PRO_PRICE_ID if plan == "pro" else None
+    if not price_id:
+        return jsonify({"error": "Invalid plan"}), 400
+
+    user_doc = users_collection.find_one(
+        {"github_id": current_user.github_id},
+        {"stripe_customer_id": 1, "email": 1},
+    )
+    customer_id = (user_doc or {}).get("stripe_customer_id")
+
+    params: dict = {
+        "line_items": [{"price": price_id, "quantity": 1}],
+        "mode": "subscription",
+        "success_url": (
+            f"{os.getenv('FRONTEND_URL')}/checkout/success"
+            "?session_id={CHECKOUT_SESSION_ID}"
+        ),
+        "cancel_url": f"{os.getenv('FRONTEND_URL')}/plans",
+        "metadata": {"github_id": current_user.github_id},
+    }
+    if customer_id:
+        params["customer"] = customer_id
+    elif current_user.email:
+        params["customer_email"] = current_user.email
+
+    try:
+        session = stripe.checkout.Session.create(**params)
+        return jsonify({"url": session.url})
+    except stripe.StripeError as e:
+        logger.exception("Stripe checkout error: %s", e)
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/stripe/webhook", methods=["POST"])
+def stripe_webhook():
+    payload = request.get_data()
+    sig = request.headers.get("Stripe-Signature", "")
+    try:
+        event = stripe.Webhook.construct_event(payload, sig, STRIPE_WEBHOOK_SECRET)
+    except (ValueError, stripe.errors.SignatureVerificationError) as e:
+        return jsonify({"error": str(e)}), 400
+
+    event_type = event["type"]
+    obj = event["data"]["object"]
+
+    if event_type == "checkout.session.completed":
+        github_id = (obj.get("metadata") or {}).get("github_id")
+        if github_id:
+            users_collection.update_one(
+                {"github_id": github_id},
+                {"$set": {
+                    "plan": "pro",
+                    "credits_remaining": -1,
+                    "stripe_customer_id": obj.get("customer"),
+                    "stripe_subscription_id": obj.get("subscription"),
+                }},
+            )
+
+    elif event_type == "customer.subscription.deleted":
+        customer_id = obj.get("customer")
+        if customer_id:
+            users_collection.update_one(
+                {"stripe_customer_id": customer_id},
+                {"$set": {
+                    "plan": "free",
+                    "credits_remaining": FREE_PLAN_CREDITS,
+                    "stripe_subscription_id": None,
+                }},
+            )
+
+    elif event_type == "customer.subscription.updated":
+        # Handle plan downgrades/upgrades via the billing portal.
+        customer_id = obj.get("customer")
+        status = obj.get("status")
+        if customer_id and status == "active":
+            users_collection.update_one(
+                {"stripe_customer_id": customer_id},
+                {"$set": {"plan": "pro", "credits_remaining": -1}},
+            )
+
+    return jsonify({"status": "ok"})
+
+
+@app.route("/stripe/portal", methods=["POST"])
+def billing_portal():
+    user_doc = users_collection.find_one(
+        {"github_id": current_user.github_id},
+        {"stripe_customer_id": 1},
+    )
+    customer_id = (user_doc or {}).get("stripe_customer_id")
+    if not customer_id:
+        return jsonify({"error": "No billing account found"}), 404
+
+    try:
+        portal = stripe.billing_portal.Session.create(
+            customer=customer_id,
+            return_url=f"{os.getenv('FRONTEND_URL')}/dashboard",
+        )
+        return jsonify({"url": portal.url})
+    except stripe.StripeError as e:
+        logger.exception("Stripe portal error: %s", e)
+        return jsonify({"error": str(e)}), 400
+
+
 @app.before_request
 def check_authentication():
     public_endpoints = {'github.login', 'github.authorized', 'auth_github', 'github_login_success', 'static', 'auth_status'}
@@ -242,16 +408,38 @@ def check_authentication():
     if request.endpoint in public_endpoints or request.method == "OPTIONS":
         return
 
+    # Socket.IO handshake — auth handled in the connect handler.
+    if request.path.startswith("/socket.io"):
+        return
+
+    # Stripe webhooks are signed by Stripe, not by user sessions.
+    if request.path == "/stripe/webhook":
+        return
+
     if not current_user.is_authenticated:
         return jsonify({"error": "Not authenticated"}), 401
 
 @app.route("/user/loaded/repos")
 def user_repos():
+    # Exclude repos that are still being ingested (no status or status == "complete").
+    # The "$exists: False" clause handles repos created before status tracking was added.
     docs = repos_collection.find(
-        {"github_id": current_user.github_id},
-        {"_id": 0, "github_id": 0}
+        {
+            "github_id": current_user.github_id,
+            "$or": [{"status": "complete"}, {"status": {"$exists": False}}],
+        },
+        {"_id": 0, "github_id": 0, "status": 0},
     )
     return jsonify(list(docs))
+
+
+@app.route("/user/ingesting/repos")
+def ingesting_repos():
+    docs = repos_collection.find(
+        {"github_id": current_user.github_id, "status": "ingesting"},
+        {"_id": 0, "repo_name": 1},
+    )
+    return jsonify([d["repo_name"] for d in docs])
 
 
 @app.route("/user/repo/<path:repo_name>/status")
@@ -351,6 +539,13 @@ def thread_messages(session_id):
 
     return jsonify(messages)
 
+@socketio.on("connect")
+def handle_connect():
+    if not current_user.is_authenticated:
+        return False  # Reject unauthenticated connections
+    join_room(f"user:{current_user.github_id}")
+
+
 @socketio.on("message")
 def handle_message(data):
     message = data.get("message")
@@ -364,11 +559,14 @@ def handle_message(data):
         emit("response", {"error": "Both 'message' and 'repo_name' are required"})
         return
 
+    # Capture the user's DB id now, while the request context is still valid.
+    user_object_id = ObjectId(current_user.id) if current_user.is_authenticated else None
+
     # Credit gate: free-plan users are limited
     user_plan = None
     if current_user.is_authenticated:
         user_doc = users_collection.find_one(
-            {"_id": ObjectId(current_user.id)},
+            {"_id": user_object_id},
             {"plan": 1, "credits_remaining": 1},
         )
         user_plan = (user_doc or {}).get("plan")
@@ -401,7 +599,7 @@ def handle_message(data):
         # Deduct 1 credit for free-plan users before running the agent
         if user_plan == "free":
             users_collection.update_one(
-                {"_id": ObjectId(current_user.id), "credits_remaining": {"$gt": 0}},
+                {"_id": user_object_id, "credits_remaining": {"$gt": 0}},
                 {"$inc": {"credits_remaining": -1}},
             )
         try:

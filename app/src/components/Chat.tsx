@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useAuth } from "../providers/AuthProvider";
 import { API_URL } from "../lib/api";
 import {
   TextInput,
@@ -59,6 +60,7 @@ interface ChatProps {
   selectedThread: string;
   onNewThread?: () => void;
   onUpgradeNeeded?: () => void;
+  ingestingRepos?: Set<string>;
 }
 
 function SourcesList({ sources }: { sources: string[] }) {
@@ -84,8 +86,10 @@ function SourcesList({ sources }: { sources: string[] }) {
   );
 }
 
-export default function Chat({ socket, selectedRepo, selectedThread, onNewThread, onUpgradeNeeded }: ChatProps) {
+export default function Chat({ socket, selectedRepo, selectedThread, onNewThread, onUpgradeNeeded, ingestingRepos }: ChatProps) {
   const theme = useMantineTheme();
+  const { user, refreshUser } = useAuth();
+  const isFree = user?.plan === "free";
   const [thread, setThread] = useState("");
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
@@ -158,6 +162,7 @@ export default function Chat({ socket, selectedRepo, selectedThread, onNewThread
       });
       setStatus("idle");
       currentMessageRef.current = "";
+      if (isFree) refreshUser();
     };
 
     const handleError = ({ error }: { error: string }) => {
@@ -285,6 +290,15 @@ export default function Chat({ socket, selectedRepo, selectedThread, onNewThread
                     {selectedRepo}
                   </Text>
                 </Text>
+              ) : ingestingRepos && ingestingRepos.size > 0 ? (
+                <Stack align="center" gap={6}>
+                  <Loader size="sm" color="violet" />
+                  <Text size="sm" c="dimmed" ta="center">
+                    {ingestingRepos.size === 1
+                      ? "Your repository is being ingested — it will appear in the sidebar when ready."
+                      : `${ingestingRepos.size} repositories are being ingested — they'll appear in the sidebar when ready.`}
+                  </Text>
+                </Stack>
               ) : (
                 <Text size="sm" span fw={600} c="violet">
                   Select or load a repo to begin chatting

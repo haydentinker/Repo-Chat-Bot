@@ -22,6 +22,7 @@ import {
 import Logo from "../components/Logo";
 import { useAuth } from "../providers/AuthProvider";
 import { API_URL } from "../lib/api";
+import { redirectToCheckout } from "../lib/stripe";
 import classes from "./Home.module.css";
 
 const PLANS = [
@@ -79,16 +80,14 @@ export default function Plans() {
       window.location.href = "mailto:hello@repochat.dev";
       return;
     }
-    if (planId === "pro") {
-      // TODO: redirect to Stripe checkout
-      // window.location.href = STRIPE_CHECKOUT_URL;
-      setError("Pro billing is coming soon. Start with the free plan for now.");
-      return;
-    }
 
     setActivating(planId);
     setError(null);
     try {
+      if (planId === "pro") {
+        await redirectToCheckout("pro");
+        return; // page will redirect to Stripe
+      }
       const res = await fetch(`${API_URL}/user/plan/activate`, {
         method: "POST",
         credentials: "include",

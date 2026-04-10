@@ -5,21 +5,52 @@ import {
   List,
   Modal,
   Progress,
+  SimpleGrid,
   Stack,
   Text,
   ThemeIcon,
   Title,
 } from "@mantine/core";
-import { IconCheck, IconBolt, IconSparkles } from "@tabler/icons-react";
-
-const PRO_FEATURES = [
-  "Unlimited repositories",
-  "2,000 messages / month",
-  "Priority indexing",
-  "Email support",
-];
+import { IconCheck, IconBolt, IconSparkles, IconUsers } from "@tabler/icons-react";
+import { redirectToCheckout } from "../lib/stripe";
 
 const FREE_PLAN_CREDITS = 100;
+
+const PAID_PLANS = [
+  {
+    id: "pro" as const,
+    name: "Pro",
+    price: "$12",
+    period: "per month",
+    description: "For developers who live in their codebase.",
+    features: [
+      "Unlimited repositories",
+      "2,000 messages / month",
+      "Priority indexing",
+      "Email support",
+    ],
+    cta: "Upgrade to Pro",
+    icon: IconSparkles,
+    color: "violet" as const,
+  },
+  {
+    id: "team" as const,
+    name: "Team",
+    price: "$49",
+    period: "per month",
+    description: "Share context across your whole engineering team.",
+    features: [
+      "Everything in Pro",
+      "Up to 10 seats",
+      "Shared repo library",
+      "Slack integration (soon)",
+      "Dedicated support",
+    ],
+    cta: "Contact us",
+    icon: IconUsers,
+    color: "grape" as const,
+  },
+];
 
 interface UpgradeModalProps {
   opened: boolean;
@@ -39,11 +70,19 @@ export default function UpgradeModal({
   const pct = Math.min(100, Math.round((used / FREE_PLAN_CREDITS) * 100));
   const isExhausted = reason === "exhausted" || creditsRemaining === 0;
 
+  const handlePlanClick = (planId: "pro" | "team") => {
+    if (planId === "team") {
+      window.location.href = "mailto:hello@repochat.dev";
+      return;
+    }
+    redirectToCheckout("pro").catch((err) => console.error("Checkout error:", err));
+  };
+
   return (
     <Modal
       opened={opened}
       onClose={onClose}
-      size="sm"
+      size="lg"
       centered
       radius="lg"
       padding="xl"
@@ -57,7 +96,7 @@ export default function UpgradeModal({
         </Group>
       }
     >
-      <Stack gap="lg">
+      <Stack gap="xl">
         {/* Usage bar */}
         <Stack gap={6}>
           <Group justify="space-between">
@@ -80,52 +119,76 @@ export default function UpgradeModal({
           )}
         </Stack>
 
-        {/* Pro pitch */}
+        {/* Plan cards */}
         <Stack gap="xs">
-          <Group gap="xs">
-            <Badge color="violet" variant="light" leftSection={<IconSparkles size={11} />}>
-              Pro plan
-            </Badge>
-            <Text size="sm" fw={700}>$12 / month</Text>
-          </Group>
+          <Title order={5} c="dimmed">Upgrade your plan</Title>
+          <SimpleGrid cols={{ base: 1, xs: 2 }} spacing="md">
+            {PAID_PLANS.map((plan) => {
+              const Icon = plan.icon;
+              return (
+                <Stack
+                  key={plan.id}
+                  gap="md"
+                  p="md"
+                  style={{
+                    borderRadius: 12,
+                    border: `1px solid var(--mantine-color-${plan.color}-4)`,
+                    background: `color-mix(in srgb, var(--mantine-color-${plan.color}-9) 30%, transparent)`,
+                  }}
+                >
+                  <Group justify="space-between" align="flex-start">
+                    <Stack gap={2}>
+                      <Group gap={6}>
+                        <Icon size={15} color={`var(--mantine-color-${plan.color}-4)`} />
+                        <Text fw={700} size="sm">{plan.name}</Text>
+                      </Group>
+                      <Group align="baseline" gap={4}>
+                        <Text fw={900} size="xl">{plan.price}</Text>
+                        <Text size="xs" c="dimmed">/ {plan.period}</Text>
+                      </Group>
+                    </Stack>
+                    <Badge color={plan.color} variant="light" size="xs">
+                      {plan.id === "pro" ? "Most popular" : "For teams"}
+                    </Badge>
+                  </Group>
 
-          <List
-            spacing={4}
-            size="sm"
-            icon={
-              <ThemeIcon color="violet" variant="light" size={18} radius="xl">
-                <IconCheck size={11} />
-              </ThemeIcon>
-            }
-          >
-            {PRO_FEATURES.map((f) => (
-              <List.Item key={f}>{f}</List.Item>
-            ))}
-          </List>
+                  <List
+                    spacing={4}
+                    size="xs"
+                    icon={
+                      <ThemeIcon color={plan.color} variant="light" size={16} radius="xl">
+                        <IconCheck size={10} />
+                      </ThemeIcon>
+                    }
+                    style={{ flex: 1 }}
+                  >
+                    {plan.features.map((f) => (
+                      <List.Item key={f}>{f}</List.Item>
+                    ))}
+                  </List>
+
+                  <Button
+                    fullWidth
+                    color={plan.color}
+                    variant="filled"
+                    radius="xl"
+                    size="sm"
+                    leftSection={<Icon size={14} />}
+                    onClick={() => handlePlanClick(plan.id)}
+                  >
+                    {plan.cta}
+                  </Button>
+                </Stack>
+              );
+            })}
+          </SimpleGrid>
         </Stack>
 
-        {/* CTAs */}
-        <Stack gap="xs">
-          <Button
-            fullWidth
-            color="violet"
-            radius="xl"
-            size="md"
-            leftSection={<IconBolt size={16} />}
-            onClick={() => {
-              // TODO: navigate to Stripe checkout
-              // window.location.href = STRIPE_CHECKOUT_URL;
-              alert("Pro billing coming soon!");
-            }}
-          >
-            Upgrade to Pro
+        {!isExhausted && (
+          <Button fullWidth variant="subtle" color="gray" radius="xl" size="sm" onClick={onClose}>
+            Keep using free plan
           </Button>
-          {!isExhausted && (
-            <Button fullWidth variant="subtle" color="gray" radius="xl" onClick={onClose}>
-              Keep using free plan
-            </Button>
-          )}
-        </Stack>
+        )}
       </Stack>
     </Modal>
   );

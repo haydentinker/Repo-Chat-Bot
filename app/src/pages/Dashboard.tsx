@@ -1,4 +1,5 @@
 import {
+  Alert,
   AppShell,
   Badge,
   Box,
@@ -16,6 +17,7 @@ import {
   useComputedColorScheme,
   useMantineColorScheme,
 } from "@mantine/core";
+import { IconCheck, IconX } from "@tabler/icons-react";
 import { useDisclosure } from "@mantine/hooks";
 import {
   IconSun,
@@ -69,7 +71,7 @@ export default function Dashboard() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const [socketConnected, setSocketConnected] = useState(socket.connected);
-  const [opened, { toggle }] = useDisclosure(false);
+  const [opened, { toggle, close: closeNav }] = useDisclosure(false);
   const [modalOpened, { open: openModal, close: closeModal }] =
     useDisclosure(false);
   const [welcomeOpened, { open: openWelcome, close: closeWelcome }] =
@@ -86,8 +88,9 @@ export default function Dashboard() {
   const [reposError, setReposError] = useState<string | null>(null);
   const [ingesting, setIngesting] = useState(false);
   const [ingestResult, setIngestResult] = useState<string | null>(null);
-  const [syncingRepo, setSyncingRepo] = useState<string | null>(null);
-  const [syncResults, setSyncResults] = useState<Record<string, string>>({});
+  const [ingestingRepos, setIngestingRepos] = useState<Set<string>>(new Set());
+  const [navReposRefreshKey, setNavReposRefreshKey] = useState(0);
+  const [notification, setNotification] = useState<{ message: string; isError: boolean } | null>(null);
   const [selectedRepo, setSelectedRepo] = useState("");
   const [selectedThread, setSelectedThread] = useState("");
   const [threadRefreshKey, setThreadRefreshKey] = useState(0);
@@ -113,10 +116,17 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
-    fetch(`${API_URL}/user/loaded/repos`, { credentials: "include" })
-      .then((res) => res.json())
-      .then((data: LoadedRepo[]) => {
-        if (data.length === 0) openWelcome();
+    Promise.all([
+      fetch(`${API_URL}/user/loaded/repos`, { credentials: "include" }).then((r) => r.json()),
+      fetch(`${API_URL}/user/ingesting/repos`, { credentials: "include" }).then((r) => r.json()),
+    ])
+      .then(([loadedData, ingestingData]: [LoadedRepo[], string[]]) => {
+        if (ingestingData.length > 0) {
+          setIngestingRepos(new Set(ingestingData));
+        }
+        if (loadedData.length === 0 && ingestingData.length === 0) {
+          openWelcome();
+        }
       })
       .catch(() => {});
   }, []);
@@ -124,7 +134,6 @@ export default function Dashboard() {
   useEffect(() => {
     if (!modalOpened) {
       setIngestResult(null);
-      setSyncResults({});
       return;
     }
     setReposLoading(true);
@@ -174,6 +183,50 @@ export default function Dashboard() {
 
   const loadedRepoNames = new Set(loadedRepos.map((r) => r.repo_name));
 
+  // Listen for async ingestion completions pushed from the server
+  useEffect(() => {
+    const onIngestComplete = (data: {
+      status: string;
+      repo_name: string;
+      message?: string;
+      chunk_count?: number;
+    }) => {
+      setIngestingRepos((prev) => {
+        const next = new Set(prev);
+        next.delete(data.repo_name);
+        return next;
+      });
+
+      if (data.status === "success") {
+        const msg = data.message ?? `${data.repo_name} ingested successfully`;
+        setNotification({ message: msg, isError: false });
+        setNavReposRefreshKey((k) => k + 1);
+        // Refresh loaded repos and statuses in the modal if it's open
+        setLoadedRepos((prev) => {
+          if (prev.find((r) => r.repo_name === data.repo_name)) return prev;
+          return [...prev, { repo_name: data.repo_name, branch: "main", chunk_count: data.chunk_count ?? 0, last_ingested: new Date().toISOString() }];
+        });
+        fetch(
+          `${API_URL}/user/repo/${encodeURIComponent(data.repo_name)}/status`,
+          { credentials: "include" },
+        )
+          .then((res) => res.json())
+          .then((status: RepoStatus) =>
+            setRepoStatuses((prev) => ({ ...prev, [data.repo_name]: status })),
+          )
+          .catch(() => {});
+      } else {
+        setNotification({
+          message: `Failed to ingest ${data.repo_name}: ${data.message ?? "unknown error"}`,
+          isError: true,
+        });
+      }
+    };
+
+    socket.on("ingest_complete", onIngestComplete);
+    return () => { socket.off("ingest_complete", onIngestComplete); };
+  }, []);
+
   async function handleIngest() {
     if (!newRepo) return;
     setIngesting(true);
@@ -186,11 +239,9 @@ export default function Dashboard() {
         body: JSON.stringify({ repo_name: newRepo }),
       });
       const data = await res.json();
-      if (data.status === "success") {
-        setIngestResult(
-          data.message ??
-            `Ingested ${data.chunk_count ?? 0} chunks (${data.updated_chunks ?? 0} updated)`,
-        );
+      if (data.status === "queued") {
+        setIngestingRepos((prev) => new Set([...prev, newRepo]));
+        setIngestResult(`Ingestion started for ${newRepo}. You'll be notified when it's ready.`);
         setNewRepo("");
       } else {
         setIngestResult(`Error: ${data.message}`);
@@ -203,8 +254,6 @@ export default function Dashboard() {
   }
 
   async function handleSync(repoName: string) {
-    setSyncingRepo(repoName);
-    setSyncResults((prev) => ({ ...prev, [repoName]: "" }));
     try {
       const res = await fetch(`${API_URL}/ingest`, {
         method: "POST",
@@ -213,26 +262,11 @@ export default function Dashboard() {
         body: JSON.stringify({ repo_name: repoName }),
       });
       const data = await res.json();
-      const msg =
-        data.status === "success"
-          ? (data.message ?? `Updated ${data.updated_chunks ?? 0} chunks`)
-          : `Error: ${data.message}`;
-      setSyncResults((prev) => ({ ...prev, [repoName]: msg }));
-      fetch(`${API_URL}/user/repo/${encodeURIComponent(repoName)}/status`, {
-        credentials: "include",
-      })
-        .then((res) => res.json())
-        .then((status: RepoStatus) =>
-          setRepoStatuses((prev) => ({ ...prev, [repoName]: status })),
-        )
-        .catch(() => {});
-    } catch (err: any) {
-      setSyncResults((prev) => ({
-        ...prev,
-        [repoName]: `Error: ${err.message}`,
-      }));
-    } finally {
-      setSyncingRepo(null);
+      if (data.status === "queued") {
+        setIngestingRepos((prev) => new Set([...prev, repoName]));
+      }
+    } catch {
+      setNotification({ message: `Failed to start sync for ${repoName}`, isError: true });
     }
   }
 
@@ -258,11 +292,13 @@ export default function Dashboard() {
               />
               <Logo withText height={36} />
             </Group>
-            <Group>
+            <Group gap="xs">
+              {/* Credits badge — desktop only */}
               {user?.plan === "free" && user.credits_remaining !== null && (
                 <Tooltip label="Free plan messages remaining this month" withArrow>
                   <Badge
                     size="xs"
+                    visibleFrom="sm"
                     color={user.credits_remaining <= 10 ? "red" : user.credits_remaining <= 30 ? "orange" : "teal"}
                     variant="light"
                     style={{ cursor: "pointer" }}
@@ -272,9 +308,11 @@ export default function Dashboard() {
                   </Badge>
                 </Tooltip>
               )}
+              {/* Live/Offline badge — desktop only */}
               <Tooltip label={socketConnected ? "Connected" : "Disconnected — reconnecting…"} withArrow>
                 <Badge
                   size="xs"
+                  visibleFrom="sm"
                   color={socketConnected ? "teal" : "orange"}
                   variant="dot"
                   style={{ cursor: "default" }}
@@ -282,14 +320,30 @@ export default function Dashboard() {
                   {socketConnected ? "Live" : "Offline"}
                 </Badge>
               </Tooltip>
-              <Button
-                variant="light"
-                color="violet"
-                onClick={openModal}
-                size="sm"
-              >
-                Manage repositories
-              </Button>
+              {/* Manage repos — full button on desktop, icon-only on mobile */}
+              <Tooltip label="Manage repositories" withArrow>
+                <Button
+                  variant="light"
+                  color="violet"
+                  onClick={openModal}
+                  size="sm"
+                  visibleFrom="sm"
+                >
+                  Manage repositories
+                </Button>
+              </Tooltip>
+              <Tooltip label="Manage repositories" withArrow>
+                <ActionIcon
+                  variant="light"
+                  color="violet"
+                  size="lg"
+                  hiddenFrom="sm"
+                  onClick={openModal}
+                  aria-label="Manage repositories"
+                >
+                  <IconFolderOpen size={18} />
+                </ActionIcon>
+              </Tooltip>
               <ActionIcon
                 variant="light"
                 color="violet"
@@ -331,15 +385,33 @@ export default function Dashboard() {
             selectedThread={selectedThread}
             setSelectedThread={setSelectedThread}
             refreshKey={threadRefreshKey}
+            reposRefreshKey={navReposRefreshKey}
+            ingestingRepos={ingestingRepos}
+            onNavigate={closeNav}
           />
         </AppShell.Navbar>
         <AppShell.Main>
+          {notification && (
+            <Alert
+              color={notification.isError ? "red" : "teal"}
+              icon={notification.isError ? <IconX size={16} /> : <IconCheck size={16} />}
+              withCloseButton
+              onClose={() => setNotification(null)}
+              mb="sm"
+              mx="md"
+              mt="sm"
+              radius="md"
+            >
+              {notification.message}
+            </Alert>
+          )}
           <Chat
             socket={socket}
             selectedRepo={selectedRepo}
             selectedThread={selectedThread}
             onNewThread={() => setThreadRefreshKey((k) => k + 1)}
             onUpgradeNeeded={openUpgrade}
+            ingestingRepos={ingestingRepos}
           />
         </AppShell.Main>
       </AppShell>
@@ -419,15 +491,41 @@ export default function Dashboard() {
 
             <Tabs.Panel value="loaded">
               <Stack gap="xs">
-                {loadedRepos.length === 0 && (
+                {loadedRepos.length === 0 && ingestingRepos.size === 0 && (
                   <Text size="sm" c="dimmed" ta="center" py="md">
                     No repositories loaded yet.
                   </Text>
                 )}
+                {/* Repos currently being ingested for the first time */}
+                {[...ingestingRepos]
+                  .filter((name) => !loadedRepoNames.has(name))
+                  .map((name) => (
+                    <Box
+                      key={`ingesting-${name}`}
+                      p="sm"
+                      style={{
+                        borderRadius: 8,
+                        border: "1px solid var(--mantine-color-default-border)",
+                        opacity: 0.7,
+                      }}
+                    >
+                      <Group justify="space-between" wrap="nowrap">
+                        <Stack gap={2}>
+                          <Text size="sm" fw={500}>{name}</Text>
+                          <Group gap={6}>
+                            <Loader size={10} color="violet" />
+                            <Badge size="xs" color="violet" variant="light">
+                              Ingesting…
+                            </Badge>
+                          </Group>
+                        </Stack>
+                      </Group>
+                    </Box>
+                  ))}
+                {/* Already-loaded repos */}
                 {loadedRepos.map((repo) => {
                   const status = repoStatuses[repo.repo_name];
-                  const isSyncing = syncingRepo === repo.repo_name;
-                  const syncMsg = syncResults[repo.repo_name];
+                  const isSyncing = ingestingRepos.has(repo.repo_name);
                   return (
                     <Box
                       key={repo.repo_name}
@@ -443,49 +541,49 @@ export default function Dashboard() {
                             {repo.repo_name}
                           </Text>
                           <Group gap={6}>
-                            {status === "loading" && (
-                              <Loader size={10} color="gray" />
-                            )}
-                            {status === "error" && (
-                              <Badge size="xs" color="gray">
-                                Status unavailable
-                              </Badge>
-                            )}
-                            {status &&
-                              status !== "loading" &&
-                              status !== "error" && (
-                                <Tooltip
-                                  label={`Stored: ${status.stored_sha ?? "none"} · Latest: ${status.latest_sha}`}
-                                  withArrow
-                                >
-                                  <Badge
-                                    size="xs"
-                                    color={
-                                      status.up_to_date ? "teal" : "orange"
-                                    }
-                                    variant="light"
-                                    style={{ cursor: "default" }}
-                                  >
-                                    {status.up_to_date
-                                      ? "Up to date"
-                                      : "Update available"}
+                            {isSyncing ? (
+                              <>
+                                <Loader size={10} color="violet" />
+                                <Badge size="xs" color="violet" variant="light">
+                                  Syncing…
+                                </Badge>
+                              </>
+                            ) : (
+                              <>
+                                {status === "loading" && (
+                                  <Loader size={10} color="gray" />
+                                )}
+                                {status === "error" && (
+                                  <Badge size="xs" color="gray">
+                                    Status unavailable
                                   </Badge>
-                                </Tooltip>
-                              )}
+                                )}
+                                {status &&
+                                  status !== "loading" &&
+                                  status !== "error" && (
+                                    <Tooltip
+                                      label={`Stored: ${status.stored_sha ?? "none"} · Latest: ${status.latest_sha}`}
+                                      withArrow
+                                    >
+                                      <Badge
+                                        size="xs"
+                                        color={status.up_to_date ? "teal" : "orange"}
+                                        variant="light"
+                                        style={{ cursor: "default" }}
+                                      >
+                                        {status.up_to_date ? "Up to date" : "Update available"}
+                                      </Badge>
+                                    </Tooltip>
+                                  )}
+                              </>
+                            )}
                           </Group>
-                          {syncMsg && (
-                            <Text
-                              size="xs"
-                              c={syncMsg.startsWith("Error") ? "red" : "teal"}
-                            >
-                              {syncMsg}
-                            </Text>
-                          )}
                         </Stack>
                         <Tooltip label="Sync latest changes" withArrow>
                           <ActionIcon
                             variant="subtle"
                             color="violet"
+                            disabled={isSyncing}
                             loading={isSyncing}
                             onClick={() => handleSync(repo.repo_name)}
                           >

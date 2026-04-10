@@ -45,9 +45,12 @@ interface NavbarProps {
   selectedThread: string;
   setSelectedThread: (thread: string) => void;
   refreshKey?: number;
+  reposRefreshKey?: number;
+  ingestingRepos?: Set<string>;
+  onNavigate?: () => void;
 }
 
-export const Navbar = ({ selectedRepo, setSelectedRepo, selectedThread, setSelectedThread, refreshKey }: NavbarProps) => {
+export const Navbar = ({ selectedRepo, setSelectedRepo, selectedThread, setSelectedThread, refreshKey, reposRefreshKey, ingestingRepos, onNavigate }: NavbarProps) => {
   const [repos, setRepos] = useState<LoadedRepo[]>([]);
   const [reposLoading, setReposLoading] = useState(false);
   const [reposError, setReposError] = useState<string | null>(null);
@@ -63,7 +66,7 @@ export const Navbar = ({ selectedRepo, setSelectedRepo, selectedThread, setSelec
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
-  useEffect(() => {
+  const fetchRepos = () => {
     setReposLoading(true);
     setReposError(null);
     fetch(`${API_URL}/user/loaded/repos`, { credentials: "include" })
@@ -74,7 +77,10 @@ export const Navbar = ({ selectedRepo, setSelectedRepo, selectedThread, setSelec
       .then((data: LoadedRepo[]) => setRepos(data))
       .catch((err: Error) => setReposError(err.message))
       .finally(() => setReposLoading(false));
-  }, []);
+  };
+
+  useEffect(() => { fetchRepos(); }, []);
+  useEffect(() => { if (reposRefreshKey) fetchRepos(); }, [reposRefreshKey]);
 
   useEffect(() => {
     if (!selectedRepo) {
@@ -196,7 +202,7 @@ export const Navbar = ({ selectedRepo, setSelectedRepo, selectedThread, setSelec
           )}
           <Select
             value={selectedRepo}
-            onChange={(value) => setSelectedRepo(value ?? "")}
+            onChange={(value) => { setSelectedRepo(value ?? ""); onNavigate?.(); }}
             label="Repository"
             placeholder="Select a repository"
             limit={10}
@@ -205,11 +211,21 @@ export const Navbar = ({ selectedRepo, setSelectedRepo, selectedThread, setSelec
             disabled={reposLoading}
             rightSection={reposLoading ? <Loader size="xs" /> : undefined}
           />
+          {repos.length === 0 && !reposLoading && ingestingRepos && ingestingRepos.size > 0 && (
+            <Group gap={6}>
+              <Loader size={10} color="violet" />
+              <Text size="xs" c="dimmed">
+                {ingestingRepos.size === 1
+                  ? "1 repository is being ingested…"
+                  : `${ingestingRepos.size} repositories are being ingested…`}
+              </Text>
+            </Group>
+          )}
           <Button
             variant="outline"
             color="violet"
             size="xs"
-            onClick={() => setSelectedThread("")}
+            onClick={() => { setSelectedThread(""); onNavigate?.(); }}
           >
             New Chat +
           </Button>
@@ -250,7 +266,7 @@ export const Navbar = ({ selectedRepo, setSelectedRepo, selectedThread, setSelec
                   label={thread.name}
                   description={new Date(thread.last_updated).toLocaleDateString()}
                   active={thread.session_id === selectedThread}
-                  onClick={() => setSelectedThread(thread.session_id)}
+                  onClick={() => { setSelectedThread(thread.session_id); onNavigate?.(); }}
                   color="violet"
                   style={{ borderRadius: 8, flex: 1, paddingRight: 58 }}
                 />

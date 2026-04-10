@@ -18,6 +18,7 @@ langgraph-checkpoint-mongodb
 langsmith
 python-dotenv
 requests
+stripe
 
 # Testing
 pytest

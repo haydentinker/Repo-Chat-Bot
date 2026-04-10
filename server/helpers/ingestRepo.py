@@ -19,6 +19,9 @@ openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 EMBEDDING_MODEL = "text-embedding-3-small"
 CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "1000"))
 CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "200"))
+# OpenAI enforces 300k tokens per embeddings request; at ~300 tokens/chunk
+# this keeps each batch comfortably under that limit.
+EMBED_BATCH_SIZE = int(os.getenv("EMBED_BATCH_SIZE", "500"))
 SUPPORTED_EXTENSIONS = {
     # Markup / docs
     ".md", ".mdx", ".rst", ".txt",
@@ -85,27 +88,32 @@ def embed_and_upsert(documents: list, user_id: str, repo_name: str) -> int:
     if not chunks:
         return 0
 
-    texts = [c.page_content for c in chunks]
-    response = openai_client.embeddings.create(input=texts, model=EMBEDDING_MODEL)
-    embeddings_list = [item.embedding for item in response.data]
+    total_modified = 0
+    for i in range(0, len(chunks), EMBED_BATCH_SIZE):
+        batch = chunks[i : i + EMBED_BATCH_SIZE]
+        texts = [c.page_content for c in batch]
+        response = openai_client.embeddings.create(input=texts, model=EMBEDDING_MODEL)
+        embeddings_list = [item.embedding for item in response.data]
 
-    operations = [
-        UpdateOne(
-            {"_id": hash_text(chunk.page_content)},
-            {"$set": {
-                "github_id": user_id,
-                "repo_name": repo_name,
-                "text": chunk.page_content,
-                "source": chunk.metadata.get("source"),
-                "embedding": embedding,
-            }},
-            upsert=True,
-        )
-        for chunk, embedding in zip(chunks, embeddings_list)
-    ]
+        operations = [
+            UpdateOne(
+                {"_id": hash_text(chunk.page_content)},
+                {"$set": {
+                    "github_id": user_id,
+                    "repo_name": repo_name,
+                    "text": chunk.page_content,
+                    "source": chunk.metadata.get("source"),
+                    "embedding": embedding,
+                }},
+                upsert=True,
+            )
+            for chunk, embedding in zip(batch, embeddings_list)
+        ]
 
-    result = vectors_collection.bulk_write(operations)
-    return result.upserted_count + result.modified_count
+        result = vectors_collection.bulk_write(operations)
+        total_modified += result.upserted_count + result.modified_count
+
+    return total_modified
 
 
 def ingest_repo(user_id: str, repo_name: str, github_token: str, branch: str = "main") -> dict:
