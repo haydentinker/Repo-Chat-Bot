@@ -4,12 +4,6 @@ A RAG-powered chat application that lets you have a conversation with any of you
 
 ---
 
-## Live demo
-
-> [repochat.dev](https://repochat.dev) — sign in with GitHub and try it on any public repo.
-
----
-
 ## How it works
 
 ```
@@ -37,15 +31,15 @@ OpenAI API  ──►  LangGraph ReAct Agent  ──►  Streamed tokens → bro
 
 ## Tech stack
 
-| Layer | Technology |
-|---|---|
-| Frontend | React 19, TypeScript, Vite, Mantine v8, socket.io-client |
-| Backend | Python, Flask, Flask-SocketIO (eventlet), flask-login, flask-dance, flask-limiter |
-| AI / RAG | LangGraph, LangChain, OpenAI (`gpt-4o-mini`, `text-embedding-3-small`) |
-| Database | MongoDB Atlas (vectors, users, repos, threads, semantic cache) |
-| Auth | GitHub OAuth 2.0 |
-| Billing | Stripe (Checkout, webhooks, billing portal) |
-| CI | GitHub Actions (pytest + Vite build on every push/PR) |
+| Layer    | Technology                                                                        |
+| -------- | --------------------------------------------------------------------------------- |
+| Frontend | React 19, TypeScript, Vite, Mantine v8, socket.io-client                          |
+| Backend  | Python, Flask, Flask-SocketIO (eventlet), flask-login, flask-dance, flask-limiter |
+| AI / RAG | LangGraph, LangChain, OpenAI (`gpt-4o-mini`, `text-embedding-3-small`)            |
+| Database | MongoDB Atlas (vectors, users, repos, threads, semantic cache)                    |
+| Auth     | GitHub OAuth 2.0                                                                  |
+| Billing  | Stripe (Checkout, webhooks, billing portal)                                       |
+| CI       | GitHub Actions (pytest + Vite build on every push/PR)                             |
 
 ---
 
@@ -70,11 +64,13 @@ cd Repo-Chat-Bot
 ```
 
 **Frontend:**
+
 ```bash
 cd app && npm install
 ```
 
 **Backend:**
+
 ```bash
 cd server
 python -m venv .venv
@@ -88,25 +84,25 @@ pip install -r requirements.txt
 cp server/.env.example server/.env
 ```
 
-| Variable | Description |
-|---|---|
-| `OPENAI_API_KEY` | OpenAI API key |
-| `OPENAI_MODEL` | Model to use (default: `gpt-4o-mini`) |
-| `MONGODB_CONNECTION_STRING` | MongoDB Atlas connection string |
-| `MONGODB_DB_NAME` | Database name |
-| `MONGODB_COLLECTION_NAME` | Vectors collection name |
-| `MONGODB_INDEX_NAME` | Vector search index name |
-| `GITHUB_ACCESS_TOKEN` | Personal access token for private repo ingestion |
-| `GITHUB_OAUTH_CLIENT_ID` | GitHub OAuth App client ID |
-| `GITHUB_OAUTH_CLIENT_SECRET` | GitHub OAuth App client secret |
-| `FLASK_APP_SECRET` | Random secret for Flask sessions |
-| `FRONTEND_URL` | Frontend origin (default: `http://localhost:5173`) |
-| `STRIPE_SECRET_KEY` | Stripe secret key (`sk_live_…` or `sk_test_…`) |
-| `STRIPE_WEBHOOK_SECRET` | Stripe webhook signing secret (`whsec_…`) |
-| `STRIPE_PRO_PRICE_ID` | Price ID for the Pro plan (`price_…`) |
-| `LANGSMITH_API_KEY` | (Optional) LangSmith API key for tracing |
-| `LANGSMITH_TRACING` | (Optional) `true` to enable tracing |
-| `LANGSMITH_PROJECT` | (Optional) LangSmith project name |
+| Variable                     | Description                                        |
+| ---------------------------- | -------------------------------------------------- |
+| `OPENAI_API_KEY`             | OpenAI API key                                     |
+| `OPENAI_MODEL`               | Model to use (default: `gpt-4o-mini`)              |
+| `MONGODB_CONNECTION_STRING`  | MongoDB Atlas connection string                    |
+| `MONGODB_DB_NAME`            | Database name                                      |
+| `MONGODB_COLLECTION_NAME`    | Vectors collection name                            |
+| `MONGODB_INDEX_NAME`         | Vector search index name                           |
+| `GITHUB_ACCESS_TOKEN`        | Personal access token for private repo ingestion   |
+| `GITHUB_OAUTH_CLIENT_ID`     | GitHub OAuth App client ID                         |
+| `GITHUB_OAUTH_CLIENT_SECRET` | GitHub OAuth App client secret                     |
+| `FLASK_APP_SECRET`           | Random secret for Flask sessions                   |
+| `FRONTEND_URL`               | Frontend origin (default: `http://localhost:5173`) |
+| `STRIPE_SECRET_KEY`          | Stripe secret key (`sk_live_…` or `sk_test_…`)     |
+| `STRIPE_WEBHOOK_SECRET`      | Stripe webhook signing secret (`whsec_…`)          |
+| `STRIPE_PRO_PRICE_ID`        | Price ID for the Pro plan (`price_…`)              |
+| `LANGSMITH_API_KEY`          | (Optional) LangSmith API key for tracing           |
+| `LANGSMITH_TRACING`          | (Optional) `true` to enable tracing                |
+| `LANGSMITH_PROJECT`          | (Optional) LangSmith project name                  |
 
 ### 3. Create the MongoDB Atlas vector search index
 
@@ -132,15 +128,19 @@ On the `vectors` collection, create an index named `vector_index`:
 ## Running the app
 
 **Backend** (from `server/`):
+
 ```bash
 python app.py
 ```
+
 Runs on `http://localhost:5000`.
 
 **Frontend** (from `app/`):
+
 ```bash
 npm run dev
 ```
+
 Runs on `http://localhost:5173`.
 
 ---
@@ -148,11 +148,13 @@ Runs on `http://localhost:5173`.
 ## Running tests
 
 **Backend** (from `server/`):
+
 ```bash
 pytest tests/ -v
 ```
 
 **Frontend** (from `app/`):
+
 ```bash
 npm test
 ```
