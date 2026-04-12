@@ -9,11 +9,13 @@ from flask_cors import CORS
 from flask_dance.contrib.github import make_github_blueprint, github
 from flask_dance.consumer import oauth_authorized
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.runnables import RunnableConfig
 from dotenv import load_dotenv
 from pymongo import MongoClient, ReturnDocument
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from openai import OpenAI
 from agents.ragAgent import baseAgent, get_thread_history, cache_namespace
 from helpers.ingestRepo import ingest_repo, get_latest_commit_sha
@@ -23,9 +25,9 @@ from datetime import datetime, UTC
 import stripe
 load_dotenv()
 
-stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
-STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
-STRIPE_PRO_PRICE_ID = os.getenv("STRIPE_PRO_PRICE_ID")
+stripe.api_key = (os.getenv("STRIPE_SECRET_KEY") or "").strip()
+STRIPE_WEBHOOK_SECRET = (os.getenv("STRIPE_WEBHOOK_SECRET") or "").strip()
+STRIPE_PRO_PRICE_ID = (os.getenv("STRIPE_PRO_PRICE_ID") or "").strip()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -34,8 +36,6 @@ THREADS_PAGE_LIMIT = 20
 
 
 class TokenStreamHandler(BaseCallbackHandler):
-    """Forwards each LLM token to the correct SocketIO client and collects retrieved sources."""
-
     def __init__(self, sid: str):
         self.sid = sid
         self._sources: set[str] = set()
@@ -120,6 +120,39 @@ CORS(
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet', ping_timeout=60, ping_interval=25)
 
 
+def _rate_limit_key():
+    if current_user.is_authenticated:
+        return f"user:{current_user.github_id}"
+    return get_remote_address()
+
+
+limiter = Limiter(
+    key_func=_rate_limit_key,
+    app=app,
+    default_limits=[],
+    storage_uri="memory://",
+)
+
+
+_socket_message_timestamps: dict[str, list[float]] = {}
+_SOCKET_RATE_WINDOW = 60.0
+_SOCKET_RATE_LIMIT = 30
+
+
+def _socket_rate_limited(github_id: str) -> bool:
+    import time
+    now = time.monotonic()
+    window_start = now - _SOCKET_RATE_WINDOW
+    timestamps = _socket_message_timestamps.get(github_id, [])
+    timestamps = [t for t in timestamps if t > window_start]
+    if len(timestamps) >= _SOCKET_RATE_LIMIT:
+        _socket_message_timestamps[github_id] = timestamps
+        return True
+    timestamps.append(now)
+    _socket_message_timestamps[github_id] = timestamps
+    return False
+
+
 @oauth_authorized.connect_via(blueprint)
 def github_logged_in(blueprint, token):
     if not token:
@@ -158,6 +191,7 @@ def get_repo_id(repo_url):
     return repo_url.replace("https://github.com/", "").replace(".git", "")
 
 @app.route("/ingest", methods=["POST"])
+@limiter.limit("10 per minute")
 def ingest():
     data = request.get_json()
     if not data or "repo_name" not in data:
@@ -168,15 +202,27 @@ def ingest():
     github_id = current_user.github_id
     user_room = f"user:{github_id}"
 
-    # Check whether a completed record already exists (needed for error recovery).
-    # A repo with last_commit_sha was previously ingested successfully.
     existing = repos_collection.find_one(
         {"github_id": github_id, "repo_name": repo_name},
         {"last_commit_sha": 1},
     )
     had_data = bool(existing and existing.get("last_commit_sha"))
 
-    # Persist "ingesting" status immediately so page reloads can show progress.
+    if not had_data and not existing:
+        user_doc = users_collection.find_one({"github_id": github_id}, {"plan": 1})
+        user_plan = (user_doc or {}).get("plan", "free")
+        repo_limit = PRO_PLAN_REPO_LIMIT if user_plan == "pro" else FREE_PLAN_REPO_LIMIT
+        repo_count = repos_collection.count_documents({
+            "github_id": github_id,
+            "status": {"$in": ["complete", "ingesting"]},
+        })
+        if repo_count >= repo_limit:
+            return jsonify({
+                "status": "error",
+                "message": f"Repo limit reached. Your {user_plan} plan allows up to {repo_limit} repositories.",
+                "limit_reached": True,
+            }), 403
+
     repos_collection.update_one(
         {"github_id": github_id, "repo_name": repo_name},
         {"$set": {"status": "ingesting", "github_id": github_id, "repo_name": repo_name}},
@@ -184,8 +230,15 @@ def ingest():
     )
 
     def ingest_task():
+        def progress(pct: int, message: str) -> None:
+            socketio.emit(
+                "ingest_progress",
+                {"repo_name": repo_name, "progress": pct, "message": message},
+                to=user_room,
+            )
+
         try:
-            result = ingest_repo(github_id, repo_name, github_token)
+            result = ingest_repo(github_id, repo_name, github_token, progress_cb=progress)
             if result.get("status") == "success":
                 repos_collection.update_one(
                     {"github_id": github_id, "repo_name": repo_name},
@@ -208,7 +261,6 @@ def ingest():
 
 
 def _revert_ingesting_status(github_id: str, repo_name: str, had_data: bool) -> None:
-    """On ingestion failure, restore a previously-complete repo or remove a new stub."""
     if had_data:
         repos_collection.update_one(
             {"github_id": github_id, "repo_name": repo_name},
@@ -237,9 +289,8 @@ def logout():
 
 
 def _user_payload(user_doc: dict | None = None) -> dict:
-    """Build the authenticated user JSON payload, including plan + credits."""
     doc = user_doc or users_collection.find_one({"_id": ObjectId(current_user.id)}) or {}
-    plan = doc.get("plan")  # None means no plan selected yet
+    plan = doc.get("plan")
     credits_remaining = doc.get("credits_remaining")
     if credits_remaining is None and plan == "free":
         credits_remaining = FREE_PLAN_CREDITS
@@ -254,6 +305,8 @@ def _user_payload(user_doc: dict | None = None) -> dict:
 
 
 FREE_PLAN_CREDITS = int(os.getenv("FREE_PLAN_CREDITS", "100"))
+FREE_PLAN_REPO_LIMIT = 2
+PRO_PLAN_REPO_LIMIT = 5
 
 
 @app.route("/auth/status")
@@ -272,7 +325,6 @@ def me():
 
 @app.route("/user/plan/activate", methods=["POST"])
 def activate_plan():
-    """Activate a plan for the current user (stub — wire to Stripe for paid tiers)."""
     data = request.get_json(silent=True) or {}
     plan = data.get("plan")
     if plan not in ("free", "pro", "team"):
@@ -282,7 +334,6 @@ def activate_plan():
     if plan == "free":
         update["credits_remaining"] = FREE_PLAN_CREDITS
     else:
-        # Pro/Team: treated as unlimited (-1) until Stripe billing is wired
         update["credits_remaining"] = -1
 
     users_collection.update_one(
@@ -293,6 +344,7 @@ def activate_plan():
 
 
 @app.route("/stripe/create-checkout-session", methods=["POST"])
+@limiter.limit("5 per hour")
 def create_checkout_session():
     data = request.get_json(silent=True) or {}
     plan = data.get("plan", "pro")
@@ -332,31 +384,64 @@ def create_checkout_session():
 
 @app.route("/stripe/webhook", methods=["POST"])
 def stripe_webhook():
-    payload = request.get_data()
+    payload = request.get_data(cache=True)
     sig = request.headers.get("Stripe-Signature", "")
+
+    if not STRIPE_WEBHOOK_SECRET:
+        logger.error("STRIPE_WEBHOOK_SECRET is not set")
+        return jsonify({"error": "Webhook secret not configured"}), 500
+
     try:
         event = stripe.Webhook.construct_event(payload, sig, STRIPE_WEBHOOK_SECRET)
-    except (ValueError, stripe.errors.SignatureVerificationError) as e:
-        return jsonify({"error": str(e)}), 400
+    except ValueError as e:
+        logger.error("Stripe webhook: invalid payload — %s", e)
+        return jsonify({"error": "Invalid payload"}), 400
+    except stripe.SignatureVerificationError as e:
+        logger.error("Stripe webhook: signature mismatch — %s", e)
+        return jsonify({"error": "Invalid signature"}), 400
 
-    event_type = event["type"]
-    obj = event["data"]["object"]
+    event_type = event.type
+    obj = event.data.object
 
     if event_type == "checkout.session.completed":
-        github_id = (obj.get("metadata") or {}).get("github_id")
-        if github_id:
+        payment_status = getattr(obj, "payment_status", None)
+        metadata = getattr(obj, "metadata", None)
+        github_id = metadata["github_id"] if metadata and "github_id" in metadata else None
+        customer = getattr(obj, "customer", None)
+        subscription = getattr(obj, "subscription", None)
+
+        if github_id and payment_status == "paid":
             users_collection.update_one(
                 {"github_id": github_id},
                 {"$set": {
                     "plan": "pro",
                     "credits_remaining": -1,
-                    "stripe_customer_id": obj.get("customer"),
-                    "stripe_subscription_id": obj.get("subscription"),
+                    "stripe_customer_id": customer,
+                    "stripe_subscription_id": subscription,
                 }},
             )
+        elif not github_id:
+            logger.warning("checkout.session.completed: no github_id in session metadata")
+        else:
+            logger.warning("checkout.session.completed: payment_status=%s — skipping", payment_status)
+
+    elif event_type == "invoice.payment_succeeded":
+        billing_reason = getattr(obj, "billing_reason", None)
+        if billing_reason == "subscription_create":
+            customer = getattr(obj, "customer", None)
+            subscription = getattr(obj, "subscription", None)
+            if customer:
+                users_collection.update_one(
+                    {"stripe_customer_id": customer},
+                    {"$set": {
+                        "plan": "pro",
+                        "credits_remaining": -1,
+                        "stripe_subscription_id": subscription,
+                    }},
+                )
 
     elif event_type == "customer.subscription.deleted":
-        customer_id = obj.get("customer")
+        customer_id = getattr(obj, "customer", None)
         if customer_id:
             users_collection.update_one(
                 {"stripe_customer_id": customer_id},
@@ -368,9 +453,8 @@ def stripe_webhook():
             )
 
     elif event_type == "customer.subscription.updated":
-        # Handle plan downgrades/upgrades via the billing portal.
-        customer_id = obj.get("customer")
-        status = obj.get("status")
+        customer_id = getattr(obj, "customer", None)
+        status = getattr(obj, "status", None)
         if customer_id and status == "active":
             users_collection.update_one(
                 {"stripe_customer_id": customer_id},
@@ -408,11 +492,9 @@ def check_authentication():
     if request.endpoint in public_endpoints or request.method == "OPTIONS":
         return
 
-    # Socket.IO handshake — auth handled in the connect handler.
     if request.path.startswith("/socket.io"):
         return
 
-    # Stripe webhooks are signed by Stripe, not by user sessions.
     if request.path == "/stripe/webhook":
         return
 
@@ -421,8 +503,6 @@ def check_authentication():
 
 @app.route("/user/loaded/repos")
 def user_repos():
-    # Exclude repos that are still being ingested (no status or status == "complete").
-    # The "$exists: False" clause handles repos created before status tracking was added.
     docs = repos_collection.find(
         {
             "github_id": current_user.github_id,
@@ -542,7 +622,7 @@ def thread_messages(session_id):
 @socketio.on("connect")
 def handle_connect():
     if not current_user.is_authenticated:
-        return False  # Reject unauthenticated connections
+        return False
     join_room(f"user:{current_user.github_id}")
 
 
@@ -559,10 +639,12 @@ def handle_message(data):
         emit("response", {"error": "Both 'message' and 'repo_name' are required"})
         return
 
-    # Capture the user's DB id now, while the request context is still valid.
+    if github_id and _socket_rate_limited(github_id):
+        emit("response", {"error": "rate_limited"})
+        return
+
     user_object_id = ObjectId(current_user.id) if current_user.is_authenticated else None
 
-    # Credit gate: free-plan users are limited
     user_plan = None
     if current_user.is_authenticated:
         user_doc = users_collection.find_one(
@@ -596,7 +678,6 @@ def handle_message(data):
     def stream_task():
         token = cache_namespace.set(ns)
         handler = TokenStreamHandler(sid)
-        # Deduct 1 credit for free-plan users before running the agent
         if user_plan == "free":
             users_collection.update_one(
                 {"_id": user_object_id, "credits_remaining": {"$gt": 0}},
@@ -611,9 +692,20 @@ def handle_message(data):
                     "session_id": session_id,
                 },
             )
+            repo_doc = repos_collection.find_one(
+                {"github_id": github_id, "repo_name": repo_name},
+                {"description": 1, "readme_excerpt": 1},
+            ) or {}
+            repo_context_parts = [f"Repository: {repo_name}"]
+            if repo_doc.get("description"):
+                repo_context_parts.append(f"Description: {repo_doc['description']}")
+            if repo_doc.get("readme_excerpt"):
+                repo_context_parts.append(f"README:\n{repo_doc['readme_excerpt']}")
+            repo_context = SystemMessage(content="\n".join(repo_context_parts))
+
             history = get_thread_history(session_id)
             prior_messages = history.messages
-            all_messages = prior_messages + [HumanMessage(content=message)]
+            all_messages = [repo_context] + prior_messages + [HumanMessage(content=message)]
             result = baseAgent.invoke({"messages": all_messages}, config=config)
             new_messages = result["messages"][len(prior_messages):]
             history.add_messages(new_messages)

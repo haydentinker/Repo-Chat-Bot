@@ -24,8 +24,8 @@ const PAID_PLANS = [
     period: "per month",
     description: "For developers who live in their codebase.",
     features: [
-      "Unlimited repositories",
-      "2,000 messages / month",
+      "5 repositories",
+      "Unlimited messages",
       "Priority indexing",
       "Email support",
     ],

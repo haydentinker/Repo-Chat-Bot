@@ -61,6 +61,24 @@ def get_latest_commit_sha(repo_name: str, branch: str, github_token: str) -> str
     return resp.json()["sha"]
 
 
+def fetch_repo_summary(repo_name: str, branch: str, github_token: str) -> dict:
+    """Return a brief summary dict with the repo description and README excerpt."""
+    summary: dict = {"description": "", "readme_excerpt": ""}
+
+    meta_resp = http_requests.get(
+        f"https://api.github.com/repos/{repo_name}",
+        headers=gh_headers(github_token),
+    )
+    if meta_resp.ok:
+        summary["description"] = meta_resp.json().get("description") or ""
+
+    readme_content = fetch_file_content(repo_name, "README.md", branch, github_token)
+    if readme_content:
+        summary["readme_excerpt"] = readme_content[:2000]
+
+    return summary
+
+
 def get_changed_files(repo_name: str, base_sha: str, head_sha: str, github_token: str) -> list:
     url = f"https://api.github.com/repos/{repo_name}/compare/{base_sha}...{head_sha}"
     resp = http_requests.get(url, headers=gh_headers(github_token))
@@ -79,7 +97,14 @@ def fetch_file_content(repo_name: str, file_path: str, branch: str, github_token
     return data.get("content")
 
 
-def embed_and_upsert(documents: list, user_id: str, repo_name: str) -> int:
+def embed_and_upsert(
+    documents: list,
+    user_id: str,
+    repo_name: str,
+    progress_cb=None,
+    progress_start: int = 20,
+    progress_end: int = 90,
+) -> int:
     if not documents:
         return 0
 
@@ -89,7 +114,9 @@ def embed_and_upsert(documents: list, user_id: str, repo_name: str) -> int:
         return 0
 
     total_modified = 0
-    for i in range(0, len(chunks), EMBED_BATCH_SIZE):
+    num_batches = max(1, (len(chunks) + EMBED_BATCH_SIZE - 1) // EMBED_BATCH_SIZE)
+
+    for batch_idx, i in enumerate(range(0, len(chunks), EMBED_BATCH_SIZE)):
         batch = chunks[i : i + EMBED_BATCH_SIZE]
         texts = [c.page_content for c in batch]
         response = openai_client.embeddings.create(input=texts, model=EMBEDDING_MODEL)
@@ -113,13 +140,20 @@ def embed_and_upsert(documents: list, user_id: str, repo_name: str) -> int:
         result = vectors_collection.bulk_write(operations)
         total_modified += result.upserted_count + result.modified_count
 
+        if progress_cb:
+            pct = progress_start + int((batch_idx + 1) / num_batches * (progress_end - progress_start))
+            progress_cb(pct, f"Embedding chunks… ({min(i + EMBED_BATCH_SIZE, len(chunks))}/{len(chunks)})")
+
     return total_modified
 
 
-def ingest_repo(user_id: str, repo_name: str, github_token: str, branch: str = "main") -> dict:
+def ingest_repo(user_id: str, repo_name: str, github_token: str, branch: str = "main", progress_cb=None) -> dict:
     user = users_collection.find_one({"github_id": user_id})
     if not user:
         return {"status": "error", "message": "User does not exist."}
+
+    if progress_cb:
+        progress_cb(5, "Fetching latest commit…")
 
     try:
         current_sha = get_latest_commit_sha(repo_name, branch, github_token)
@@ -138,6 +172,8 @@ def ingest_repo(user_id: str, repo_name: str, github_token: str, branch: str = "
         }
 
     if stored_sha is None:
+        if progress_cb:
+            progress_cb(10, "Loading repository files…")
 
         try:
             loader = GithubFileLoader(
@@ -153,10 +189,15 @@ def ingest_repo(user_id: str, repo_name: str, github_token: str, branch: str = "
         if not documents:
             return {"status": "error", "message": "No supported files found in repo."}
 
-        updated_count = embed_and_upsert(documents, user_id, repo_name)
+        if progress_cb:
+            progress_cb(20, f"Loaded {len(documents)} files. Embedding…")
+
+        updated_count = embed_and_upsert(documents, user_id, repo_name, progress_cb=progress_cb)
 
     else:
-       
+        if progress_cb:
+            progress_cb(10, "Detecting changed files…")
+
         try:
             changed_files = get_changed_files(repo_name, stored_sha, current_sha, github_token)
         except Exception as e:
@@ -175,6 +216,9 @@ def ingest_repo(user_id: str, repo_name: str, github_token: str, branch: str = "
                 "repo_name": repo_name,
                 "updated_chunks": 0,
             }
+
+        if progress_cb:
+            progress_cb(20, f"Re-indexing {len(supported_changes)} changed file(s)…")
 
         paths_to_delete = [f["filename"] for f in supported_changes]
         paths_to_delete += [
@@ -199,9 +243,13 @@ def ingest_repo(user_id: str, repo_name: str, github_token: str, branch: str = "
                     metadata={"source": f["filename"]},
                 ))
 
-        updated_count = embed_and_upsert(documents, user_id, repo_name)
+        updated_count = embed_and_upsert(documents, user_id, repo_name, progress_cb=progress_cb)
+
+    if progress_cb:
+        progress_cb(92, "Saving index metadata…")
 
     chunk_count = vectors_collection.count_documents({"github_id": user_id, "repo_name": repo_name})
+    repo_summary = fetch_repo_summary(repo_name, branch, github_token)
 
     repos_collection.update_one(
         {"github_id": user_id, "repo_name": repo_name},
@@ -210,6 +258,8 @@ def ingest_repo(user_id: str, repo_name: str, github_token: str, branch: str = "
             "last_ingested": datetime.now(UTC),
             "last_commit_sha": current_sha,
             "chunk_count": chunk_count,
+            "description": repo_summary["description"],
+            "readme_excerpt": repo_summary["readme_excerpt"],
         }, "$setOnInsert": {
             "github_id": user_id,
             "repo_name": repo_name,

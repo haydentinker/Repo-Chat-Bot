@@ -7,6 +7,7 @@ import {
   Button,
   Group,
   Modal,
+  Progress,
   Select,
   Text,
   ActionIcon,
@@ -89,6 +90,7 @@ export default function Dashboard() {
   const [ingesting, setIngesting] = useState(false);
   const [ingestResult, setIngestResult] = useState<string | null>(null);
   const [ingestingRepos, setIngestingRepos] = useState<Set<string>>(new Set());
+  const [ingestProgress, setIngestProgress] = useState<Map<string, { progress: number; message: string }>>(new Map());
   const [navReposRefreshKey, setNavReposRefreshKey] = useState(0);
   const [notification, setNotification] = useState<{ message: string; isError: boolean } | null>(null);
   const [selectedRepo, setSelectedRepo] = useState("");
@@ -196,6 +198,11 @@ export default function Dashboard() {
         next.delete(data.repo_name);
         return next;
       });
+      setIngestProgress((prev) => {
+        const next = new Map(prev);
+        next.delete(data.repo_name);
+        return next;
+      });
 
       if (data.status === "success") {
         const msg = data.message ?? `${data.repo_name} ingested successfully`;
@@ -223,8 +230,20 @@ export default function Dashboard() {
       }
     };
 
+    const onIngestProgress = (data: { repo_name: string; progress: number; message: string }) => {
+      setIngestProgress((prev) => {
+        const next = new Map(prev);
+        next.set(data.repo_name, { progress: data.progress, message: data.message });
+        return next;
+      });
+    };
+
     socket.on("ingest_complete", onIngestComplete);
-    return () => { socket.off("ingest_complete", onIngestComplete); };
+    socket.on("ingest_progress", onIngestProgress);
+    return () => {
+      socket.off("ingest_complete", onIngestComplete);
+      socket.off("ingest_progress", onIngestProgress);
+    };
   }, []);
 
   async function handleIngest() {
@@ -243,6 +262,8 @@ export default function Dashboard() {
         setIngestingRepos((prev) => new Set([...prev, newRepo]));
         setIngestResult(`Ingestion started for ${newRepo}. You'll be notified when it's ready.`);
         setNewRepo("");
+      } else if (data.limit_reached) {
+        openUpgrade();
       } else {
         setIngestResult(`Error: ${data.message}`);
       }
@@ -499,29 +520,39 @@ export default function Dashboard() {
                 {/* Repos currently being ingested for the first time */}
                 {[...ingestingRepos]
                   .filter((name) => !loadedRepoNames.has(name))
-                  .map((name) => (
-                    <Box
-                      key={`ingesting-${name}`}
-                      p="sm"
-                      style={{
-                        borderRadius: 8,
-                        border: "1px solid var(--mantine-color-default-border)",
-                        opacity: 0.7,
-                      }}
-                    >
-                      <Group justify="space-between" wrap="nowrap">
-                        <Stack gap={2}>
-                          <Text size="sm" fw={500}>{name}</Text>
-                          <Group gap={6}>
-                            <Loader size={10} color="violet" />
+                  .map((name) => {
+                    const prog = ingestProgress.get(name);
+                    return (
+                      <Box
+                        key={`ingesting-${name}`}
+                        p="sm"
+                        style={{
+                          borderRadius: 8,
+                          border: "1px solid var(--mantine-color-default-border)",
+                          opacity: 0.85,
+                        }}
+                      >
+                        <Stack gap={6}>
+                          <Group justify="space-between" wrap="nowrap">
+                            <Text size="sm" fw={500}>{name}</Text>
                             <Badge size="xs" color="violet" variant="light">
-                              Ingesting…
+                              {prog ? `${prog.progress}%` : "Queued"}
                             </Badge>
                           </Group>
+                          <Progress
+                            value={prog?.progress ?? 0}
+                            color="violet"
+                            radius="xl"
+                            size="sm"
+                            animated={!!prog}
+                          />
+                          <Text size="xs" c="dimmed">
+                            {prog?.message ?? "Waiting to start…"}
+                          </Text>
                         </Stack>
-                      </Group>
-                    </Box>
-                  ))}
+                      </Box>
+                    );
+                  })}
                 {/* Already-loaded repos */}
                 {loadedRepos.map((repo) => {
                   const status = repoStatuses[repo.repo_name];
@@ -542,12 +573,25 @@ export default function Dashboard() {
                           </Text>
                           <Group gap={6}>
                             {isSyncing ? (
-                              <>
-                                <Loader size={10} color="violet" />
-                                <Badge size="xs" color="violet" variant="light">
-                                  Syncing…
-                                </Badge>
-                              </>
+                              <Stack gap={4} style={{ flex: 1 }}>
+                                <Group gap={6}>
+                                  <Loader size={10} color="violet" />
+                                  <Badge size="xs" color="violet" variant="light">
+                                    {ingestProgress.get(repo.repo_name)
+                                      ? `Syncing… ${ingestProgress.get(repo.repo_name)!.progress}%`
+                                      : "Syncing…"}
+                                  </Badge>
+                                </Group>
+                                {ingestProgress.get(repo.repo_name) && (
+                                  <Progress
+                                    value={ingestProgress.get(repo.repo_name)!.progress}
+                                    color="violet"
+                                    radius="xl"
+                                    size="xs"
+                                    animated
+                                  />
+                                )}
+                              </Stack>
                             ) : (
                               <>
                                 {status === "loading" && (
