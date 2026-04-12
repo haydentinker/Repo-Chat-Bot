@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { screen, fireEvent, waitFor, act } from "@testing-library/react";
+import { screen, fireEvent, act } from "@testing-library/react";
 import { Socket } from "socket.io-client";
 import Chat from "../components/Chat";
 import { renderWithMantine } from "./utils";
