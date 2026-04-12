@@ -166,9 +166,19 @@ class TestIngestRepo:
             upserted_count=0, modified_count=0
         )
 
+        def _ok_json(payload):
+            r = MagicMock()
+            r.ok = True
+            r.json.return_value = payload
+            return r
+
         mock_github_api.get.side_effect = [
             _sha_response("new_sha"),
             _compare_response([{"filename": "main.py", "status": "removed"}]),
+            # fetch_repo_summary: repo metadata
+            _ok_json({"description": "test repo"}),
+            # fetch_repo_summary: README contents
+            _ok_json({"encoding": "base64", "content": __import__("base64").b64encode(b"# README").decode()}),
         ]
 
         from helpers.ingestRepo import ingest_repo
@@ -188,6 +198,12 @@ class TestIngestRepo:
             upserted_count=1, modified_count=0
         )
 
+        def _ok_json(payload):
+            r = MagicMock()
+            r.ok = True
+            r.json.return_value = payload
+            return r
+
         mock_github_api.get.side_effect = [
             _sha_response("new_sha"),
             _compare_response([{
@@ -195,11 +211,15 @@ class TestIngestRepo:
                 "previous_filename": "old_name.py",
                 "status": "renamed",
             }]),
-            # fetch_file_content call
-            MagicMock(ok=True, json=MagicMock(return_value={
+            # fetch_file_content for renamed file
+            _ok_json({
                 "encoding": "base64",
                 "content": __import__("base64").b64encode(b"print('hi')").decode(),
-            })),
+            }),
+            # fetch_repo_summary: repo metadata
+            _ok_json({"description": "test repo"}),
+            # fetch_repo_summary: README contents
+            _ok_json({"encoding": "base64", "content": __import__("base64").b64encode(b"# README").decode()}),
         ]
 
         from helpers.ingestRepo import ingest_repo

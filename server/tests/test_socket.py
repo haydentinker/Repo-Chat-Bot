@@ -27,6 +27,7 @@ def _mock_user(github_id="user1"):
     user = MagicMock()
     user.is_authenticated = True
     user.github_id = github_id
+    user.id = str(ObjectId())
     return user
 
 
@@ -84,15 +85,17 @@ class TestSocketNewThread:
         user = _mock_user()
         mock_history = MagicMock()
         mock_history.messages = []
-        mock_result = MagicMock()
-        mock_result.__getitem__ = lambda self, key: [] if key == "messages" else None
 
         with (
             patch("app.current_user", user),
             patch("app.thread_collection") as mock_threads,
+            patch("app.users_collection") as mock_users,
+            patch("app.repos_collection") as mock_repos,
             patch("app.get_thread_history", return_value=mock_history),
             patch("app.baseAgent") as mock_agent,
         ):
+            mock_users.find_one.return_value = {"plan": "free", "credits_remaining": 100}
+            mock_repos.find_one.return_value = {}
             mock_agent.invoke.return_value = {"messages": []}
             client = flask_app.socketio.test_client(flask_app.app)
             client.emit("message", {
@@ -118,9 +121,13 @@ class TestSocketNewThread:
         with (
             patch("app.current_user", user),
             patch("app.thread_collection") as mock_threads,
+            patch("app.users_collection") as mock_users,
+            patch("app.repos_collection") as mock_repos,
             patch("app.get_thread_history", return_value=mock_history),
             patch("app.baseAgent") as mock_agent,
         ):
+            mock_users.find_one.return_value = {"plan": "free", "credits_remaining": 100}
+            mock_repos.find_one.return_value = {}
             mock_agent.invoke.return_value = {"messages": []}
             client = flask_app.socketio.test_client(flask_app.app)
             client.emit("message", {
@@ -143,22 +150,21 @@ class TestCacheNamespace:
     def test_cache_namespace_set_per_user_and_repo(self, flask_app):
         """Verify cache_namespace is set to github_id::repo_name during stream."""
         user = _mock_user(github_id="user42")
-        observed_namespaces: list[str] = []
         mock_history = MagicMock()
         mock_history.messages = []
-
-        def fake_invoke(inputs, config=None):
-            from agents.ragAgent import cache_namespace
-            observed_namespaces.append(cache_namespace.get())
-            return {"messages": []}
 
         with (
             patch("app.current_user", user),
             patch("app.thread_collection"),
+            patch("app.users_collection") as mock_users,
+            patch("app.repos_collection") as mock_repos,
             patch("app.get_thread_history", return_value=mock_history),
             patch("app.baseAgent") as mock_agent,
+            patch("app.cache_namespace") as mock_ns,
         ):
-            mock_agent.invoke.side_effect = fake_invoke
+            mock_users.find_one.return_value = {"plan": "free", "credits_remaining": 100}
+            mock_repos.find_one.return_value = {}
+            mock_agent.invoke.return_value = {"messages": []}
             client = flask_app.socketio.test_client(flask_app.app)
             client.emit("message", {
                 "message": "test",
@@ -167,6 +173,8 @@ class TestCacheNamespace:
             import eventlet
             eventlet.sleep(0.05)
 
-        assert any("user42" in ns and "owner/myrepo" in ns for ns in observed_namespaces), (
-            f"Expected namespace to contain user42 and owner/myrepo, got: {observed_namespaces}"
+            set_calls = [str(c.args[0]) for c in mock_ns.set.call_args_list]
+
+        assert any("user42" in c and "owner/myrepo" in c for c in set_calls), (
+            f"Expected cache_namespace.set() called with user42::owner/myrepo, got: {set_calls}"
         )

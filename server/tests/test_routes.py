@@ -32,6 +32,7 @@ def _mock_user(github_id="user1", username="testuser"):
     user.github_id = github_id
     user.username = username
     user.email = "test@example.com"
+    user.id = str(ObjectId())
     return user
 
 
@@ -46,12 +47,18 @@ class TestMe:
             mock_cu.is_authenticated = False
             resp = c.get("/me")
         assert resp.status_code == 401
-        assert resp.get_json()["authenticated"] is False
+        data = resp.get_json()
+        # before_request intercepts and returns {"error": "Not authenticated"}
+        assert "error" in data or data.get("authenticated") is False
 
     def test_authenticated_returns_user(self, client):
         c, app_module = client
         user = _mock_user()
-        with patch("app.current_user", user):
+        with (
+            patch("app.current_user", user),
+            patch("app.users_collection") as mock_users,
+        ):
+            mock_users.find_one.return_value = {"plan": "free", "credits_remaining": 100}
             resp = c.get("/me")
         assert resp.status_code == 200
         data = resp.get_json()
@@ -87,18 +94,25 @@ class TestIngest:
     def test_valid_request_calls_ingest(self, client):
         c, app_module = client
         user = _mock_user()
-        mock_result = {"status": "success", "repo_name": "owner/repo", "updated_chunks": 5}
 
         with (
             patch("app.current_user", user),
             patch("app.github") as mock_gh,
-            patch("app.ingest_repo", return_value=mock_result) as mock_ingest,
+            patch("app.repos_collection") as mock_repos,
+            patch("app.users_collection") as mock_users,
+            patch("app.socketio") as mock_sio,
         ):
             mock_gh.token = {"access_token": "ghtoken"}
+            # No existing repo doc → new ingest, check plan
+            mock_repos.find_one.return_value = None
+            mock_repos.count_documents.return_value = 0
+            mock_users.find_one.return_value = {"plan": "free"}
+            mock_sio.start_background_task = MagicMock()
             resp = c.post("/ingest", json={"repo_name": "owner/repo"})
 
         assert resp.status_code == 200
-        mock_ingest.assert_called_once_with("user1", "owner/repo", "ghtoken")
+        assert resp.get_json()["status"] == "queued"
+        mock_sio.start_background_task.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +152,7 @@ class TestLogout:
 
         with (
             patch("app.current_user", user),
+            patch("flask_login.utils._get_user", return_value=user),
             patch("app.logout_user") as mock_logout,
         ):
             resp = c.get("/logout")

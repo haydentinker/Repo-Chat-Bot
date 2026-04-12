@@ -12,15 +12,19 @@ export default function PrivateRoute({ children }: Props) {
 
   if (loading) {
     return (
-      <div style={{
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        height: "100vh",
-        gap: 24,
-        background: "var(--mantine-color-body)",
-      }}>
+      <div
+        role="status"
+        aria-label="Loading"
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          height: "100vh",
+          gap: 24,
+          background: "var(--mantine-color-body)",
+        }}
+      >
         <Logo height={56} />
         {/* Pulsing dots */}
         <div style={{ display: "flex", gap: 8 }}>

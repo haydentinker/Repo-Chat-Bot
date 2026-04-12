@@ -16,13 +16,13 @@ afterEach(() => {
 
 describe("PrivateRoute", () => {
   it("shows loading indicator while auth is resolving", () => {
-    mockUseAuth.mockReturnValue({ user: null, loading: true });
+    mockUseAuth.mockReturnValue({ user: null, loading: true, refreshUser: vi.fn() });
     render(
       <PrivateRoute>
         <div>protected content</div>
       </PrivateRoute>
     );
-    expect(screen.getByText(/loading/i)).toBeInTheDocument();
+    expect(screen.getByRole("status")).toBeInTheDocument();
     expect(screen.queryByText("protected content")).not.toBeInTheDocument();
   });
 
@@ -33,8 +33,11 @@ describe("PrivateRoute", () => {
         username: "octocat",
         email: null,
         authenticated: true,
+        plan: "free",
+        credits_remaining: 100,
       },
       loading: false,
+      refreshUser: vi.fn(),
     });
 
     render(
@@ -46,7 +49,7 @@ describe("PrivateRoute", () => {
   });
 
   it("redirects to GitHub auth when user is null", () => {
-    mockUseAuth.mockReturnValue({ user: null, loading: false });
+    mockUseAuth.mockReturnValue({ user: null, loading: false, refreshUser: vi.fn() });
 
     const assignMock = vi.fn();
     Object.defineProperty(window, "location", {

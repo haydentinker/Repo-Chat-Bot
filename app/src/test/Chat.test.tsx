@@ -27,14 +27,14 @@ describe("Chat", () => {
 
   it("renders the empty state with the repo name", () => {
     renderWithMantine(
-      <Chat socket={socket as Socket} selectedRepo="owner/my-repo" />
+      <Chat socket={socket as Socket} selectedThread="" selectedRepo="owner/my-repo" />
     );
     expect(screen.getByText(/owner\/my-repo/i)).toBeInTheDocument();
   });
 
   it("shows input placeholder with repo name", () => {
     renderWithMantine(
-      <Chat socket={socket as Socket} selectedRepo="owner/my-repo" />
+      <Chat socket={socket as Socket} selectedThread="" selectedRepo="owner/my-repo" />
     );
     expect(
       screen.getByPlaceholderText(/Message owner\/my-repo/i)
@@ -43,7 +43,7 @@ describe("Chat", () => {
 
   it("adds user message to the list on send", () => {
     renderWithMantine(
-      <Chat socket={socket as Socket} selectedRepo="owner/repo" />
+      <Chat socket={socket as Socket} selectedThread="" selectedRepo="owner/repo" />
     );
     const input = screen.getByPlaceholderText(/Message/i);
     fireEvent.change(input, { target: { value: "What does this repo do?" } });
@@ -53,7 +53,7 @@ describe("Chat", () => {
 
   it("does not emit to socket when input is empty", () => {
     renderWithMantine(
-      <Chat socket={socket as Socket} selectedRepo="owner/repo" />
+      <Chat socket={socket as Socket} selectedThread="" selectedRepo="owner/repo" />
     );
     const button = screen.getByRole("button", { name: /send/i });
     fireEvent.click(button);
@@ -62,7 +62,7 @@ describe("Chat", () => {
 
   it("emits message event to socket in normal mode", () => {
     renderWithMantine(
-      <Chat socket={socket as Socket} selectedRepo="owner/repo" />
+      <Chat socket={socket as Socket} selectedThread="" selectedRepo="owner/repo" />
     );
     const input = screen.getByPlaceholderText(/Message/i);
     fireEvent.change(input, { target: { value: "Hello" } });
@@ -75,7 +75,7 @@ describe("Chat", () => {
 
   it("disables input and button while waiting", () => {
     renderWithMantine(
-      <Chat socket={socket as Socket} selectedRepo="owner/repo" />
+      <Chat socket={socket as Socket} selectedThread="" selectedRepo="owner/repo" />
     );
     const input = screen.getByPlaceholderText(/Message/i);
     fireEvent.change(input, { target: { value: "Hello" } });
@@ -88,11 +88,11 @@ describe("Chat", () => {
   describe("mock mode", () => {
     it("does NOT emit to socket when mock mode is on", async () => {
       renderWithMantine(
-        <Chat socket={socket as Socket} selectedRepo="owner/repo" />
+        <Chat socket={socket as Socket} selectedThread="" selectedRepo="owner/repo" />
       );
 
       // Enable mock mode
-      fireEvent.click(screen.getByRole("checkbox"));
+      fireEvent.click(screen.getByRole("switch"));
 
       const input = screen.getByPlaceholderText(/Message/i);
       fireEvent.change(input, { target: { value: "test" } });
@@ -103,9 +103,9 @@ describe("Chat", () => {
 
     it("shows thinking indicator after send in mock mode", async () => {
       renderWithMantine(
-        <Chat socket={socket as Socket} selectedRepo="owner/repo" />
+        <Chat socket={socket as Socket} selectedThread="" selectedRepo="owner/repo" />
       );
-      fireEvent.click(screen.getByRole("checkbox"));
+      fireEvent.click(screen.getByRole("switch"));
 
       const input = screen.getByPlaceholderText(/Message/i);
       fireEvent.change(input, { target: { value: "hi" } });
@@ -116,9 +116,9 @@ describe("Chat", () => {
 
     it("produces an assistant response after the simulated delay", async () => {
       renderWithMantine(
-        <Chat socket={socket as Socket} selectedRepo="owner/repo" />
+        <Chat socket={socket as Socket} selectedThread="" selectedRepo="owner/repo" />
       );
-      fireEvent.click(screen.getByRole("checkbox"));
+      fireEvent.click(screen.getByRole("switch"));
 
       const input = screen.getByPlaceholderText(/Message/i);
       fireEvent.change(input, { target: { value: "hi" } });
@@ -137,19 +137,19 @@ describe("Chat", () => {
 
     it("re-enables input after mock stream completes", async () => {
       renderWithMantine(
-        <Chat socket={socket as Socket} selectedRepo="owner/repo" />
+        <Chat socket={socket as Socket} selectedThread="" selectedRepo="owner/repo" />
       );
-      fireEvent.click(screen.getByRole("checkbox"));
+      fireEvent.click(screen.getByRole("switch"));
 
       const input = screen.getByPlaceholderText(/Message/i);
       fireEvent.change(input, { target: { value: "hi" } });
       fireEvent.click(screen.getByRole("button", { name: /send/i }));
 
       await act(async () => {
-        vi.advanceTimersByTime(15000);
+        vi.runAllTimers();
       });
 
-      await waitFor(() => expect(input).not.toBeDisabled());
+      expect(input).not.toBeDisabled();
     });
   });
 });

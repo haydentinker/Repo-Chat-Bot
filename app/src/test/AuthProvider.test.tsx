@@ -87,7 +87,7 @@ describe("AuthProvider", () => {
     );
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    const [, options] = fetchMock.mock.calls[0];
-    expect(options).toMatchObject({ credentials: "include" });
+    const lastCall = fetchMock.mock.lastCall as unknown as [string, RequestInit];
+    expect(lastCall[1]).toMatchObject({ credentials: "include" });
   });
 });
