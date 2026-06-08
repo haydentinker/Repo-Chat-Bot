@@ -26,7 +26,7 @@ describe("AuthProvider", () => {
   it("shows loading state initially", () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(() => new Promise(() => {})) // never resolves
+      vi.fn(() => new Promise(() => {}))
     );
     render(
       <AuthProvider>

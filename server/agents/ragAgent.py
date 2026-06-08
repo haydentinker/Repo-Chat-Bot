@@ -41,15 +41,8 @@ class NamespacedSemanticCache(MongoDBAtlasSemanticCache):
 class TimestampedMongoDBChatMessageHistory(BaseChatMessageHistory):
     """Stores LangChain messages as BSON docs with timestamps and supports last-N retrieval."""
 
-    def __init__(
-        self,
-        connection_string: str,
-        session_id: str,
-        database_name: str,
-        collection_name: str,
-    ):
-        self.client = MongoClient(connection_string)
-        self.collection = self.client[database_name][collection_name]
+    def __init__(self, collection, session_id: str):
+        self.collection = collection
         self.session_id = session_id
 
     def get_last_messages(self, limit: int) -> list[BaseMessage]:
@@ -92,6 +85,7 @@ class TimestampedMongoDBChatMessageHistory(BaseChatMessageHistory):
 
 load_dotenv()
 client = MongoClient(os.getenv("MONGODB_CONNECTION_STRING"))
+thread_store_collection = client[os.getenv("MONGODB_DB_NAME")]["thread_store"]
 
 SYSTEM_PROMPT = (
     "You are a helpful coding assistant that can answer questions about GitHub repositories. "
@@ -126,8 +120,6 @@ set_llm_cache(NamespacedSemanticCache(
 
 def get_thread_history(session_id: str) -> TimestampedMongoDBChatMessageHistory:
     return TimestampedMongoDBChatMessageHistory(
-        connection_string=os.getenv("MONGODB_CONNECTION_STRING"),
+        collection=thread_store_collection,
         session_id=session_id,
-        database_name=os.getenv("MONGODB_DB_NAME"),
-        collection_name="thread_store",
     )

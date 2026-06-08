@@ -91,7 +91,6 @@ describe("Chat", () => {
         <Chat socket={socket as Socket} selectedThread="" selectedRepo="owner/repo" />
       );
 
-      // Enable mock mode
       fireEvent.click(screen.getByRole("switch"));
 
       const input = screen.getByPlaceholderText(/Message/i);
@@ -124,15 +123,15 @@ describe("Chat", () => {
       fireEvent.change(input, { target: { value: "hi" } });
       fireEvent.click(screen.getByRole("button", { name: /send/i }));
 
-      // Advance past the 600ms waiting delay + enough ticks for words to emit
       await act(async () => {
         vi.advanceTimersByTime(5000);
       });
 
-      // At least some content should have appeared
       const papers = document.querySelectorAll("[class*=Paper]");
-      // user message + at least partial assistant message
-      expect(papers.length).toBeGreaterThanOrEqual(1);
+      expect(papers.length).toBeGreaterThanOrEqual(2);
+      const assistantText = papers[papers.length - 1].textContent ?? "";
+      expect(assistantText.length).toBeGreaterThan(0);
+      expect(assistantText).not.toBe("hi");
     });
 
     it("re-enables input after mock stream completes", async () => {

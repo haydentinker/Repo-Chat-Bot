@@ -9,9 +9,6 @@ import os
 import sys
 from unittest.mock import MagicMock
 
-# ---------------------------------------------------------------------------
-# Minimal env vars so module-level clients initialise without error
-# ---------------------------------------------------------------------------
 os.environ.setdefault("MONGODB_CONNECTION_STRING", "mongodb://localhost:27017")
 os.environ.setdefault("MONGODB_DB_NAME", "testdb")
 os.environ.setdefault("OPENAI_API_KEY", "test-key-xxxx")
@@ -19,8 +16,4 @@ os.environ.setdefault("FLASK_APP_SECRET", "test-secret")
 os.environ.setdefault("GITHUB_OAUTH_CLIENT_ID", "test-client-id")
 os.environ.setdefault("GITHUB_OAUTH_CLIENT_SECRET", "test-client-secret")
 
-# ---------------------------------------------------------------------------
-# Stub the heavy RAG agent module so importing app.py doesn't trigger
-# LangChain / LangGraph / MongoDB connections.
-# ---------------------------------------------------------------------------
 sys.modules.setdefault("agents.ragAgent", MagicMock())

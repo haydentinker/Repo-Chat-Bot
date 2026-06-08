@@ -86,7 +86,7 @@ export default function Plans() {
     try {
       if (planId === "pro") {
         await redirectToCheckout("pro");
-        return; // page will redirect to Stripe
+        return;
       }
       const res = await fetch(`${API_URL}/user/plan/activate`, {
         method: "POST",
@@ -106,7 +106,6 @@ export default function Plans() {
 
   return (
     <Box style={{ minHeight: "100vh", backgroundColor: "var(--mantine-color-body)" }}>
-      {/* Header */}
       <Box className={classes.navbar} px="xl" py="sm">
         <Group justify="space-between" maw={1100} mx="auto">
           <Logo withText height={32} />
@@ -124,7 +123,6 @@ export default function Plans() {
         </Group>
       </Box>
 
-      {/* Hero */}
       <Box className={classes.heroBg} py={80}>
         <div className={`${classes.orb} ${classes.orb1}`} />
         <div className={`${classes.orb} ${classes.orb2}`} />
@@ -150,7 +148,6 @@ export default function Plans() {
 
       <div className={classes.divider} />
 
-      {/* Plan cards */}
       <Container size="lg" py={80}>
         {error && (
           <Text ta="center" c="orange" size="sm" mb="xl">

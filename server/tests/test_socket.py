@@ -10,10 +10,6 @@ from unittest.mock import MagicMock, patch
 from bson import ObjectId
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
 @pytest.fixture(scope="module")
 def flask_app():
     with patch("helpers.ingestRepo.repos_collection"):
@@ -37,10 +33,6 @@ def _make_socket_client(flask_app, user):
         client = flask_app.socketio.test_client(flask_app.app)
     return client
 
-
-# ---------------------------------------------------------------------------
-# Missing required fields
-# ---------------------------------------------------------------------------
 
 class TestSocketValidation:
     def test_missing_message_emits_error(self, flask_app):
@@ -76,10 +68,6 @@ class TestSocketValidation:
         assert error_events
 
 
-# ---------------------------------------------------------------------------
-# New thread creation
-# ---------------------------------------------------------------------------
-
 class TestSocketNewThread:
     def test_new_thread_inserted_into_db(self, flask_app):
         user = _mock_user()
@@ -102,7 +90,6 @@ class TestSocketNewThread:
                 "message": "What does this repo do?",
                 "repo_name": "owner/repo",
             })
-            # Give background task a moment (test client is sync)
             import eventlet
             eventlet.sleep(0.05)
 
@@ -141,10 +128,6 @@ class TestSocketNewThread:
         mock_threads.update_one.assert_called_once()
         mock_threads.insert_one.assert_not_called()
 
-
-# ---------------------------------------------------------------------------
-# Cache namespace isolation
-# ---------------------------------------------------------------------------
 
 class TestCacheNamespace:
     def test_cache_namespace_set_per_user_and_repo(self, flask_app):

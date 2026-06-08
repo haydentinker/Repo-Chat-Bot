@@ -23,21 +23,13 @@ CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "200"))
 # this keeps each batch comfortably under that limit.
 EMBED_BATCH_SIZE = int(os.getenv("EMBED_BATCH_SIZE", "500"))
 SUPPORTED_EXTENSIONS = {
-    # Markup / docs
     ".md", ".mdx", ".rst", ".txt",
-    # Python
     ".py", ".pyi",
-    # JavaScript / TypeScript
     ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
-    # Web
     ".html", ".css", ".scss", ".sass",
-    # Data / config
     ".json", ".jsonc", ".yaml", ".yml", ".toml", ".ini", ".env.example",
-    # Shell
     ".sh", ".bash", ".zsh",
-    # Other languages
     ".go", ".rb", ".rs", ".java", ".c", ".cpp", ".h", ".hpp", ".cs", ".php", ".swift", ".kt",
-    # Infrastructure / tooling
     ".tf", ".hcl", ".dockerfile", ".sql",
 }
 

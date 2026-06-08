@@ -61,7 +61,7 @@ class TokenStreamHandler(BaseCallbackHandler):
         return sorted(self._sources)
 
 
-app = Flask("Github-Repo-Analysis-Bot")
+app = Flask("Repository-Augur")
 app.secret_key = os.getenv("FLASK_APP_SECRET")
 app.config["MONGO_URI"] = os.getenv("MONGODB_CONNECTION_STRING")
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
@@ -327,18 +327,12 @@ def me():
 def activate_plan():
     data = request.get_json(silent=True) or {}
     plan = data.get("plan")
-    if plan not in ("free", "pro", "team"):
-        return jsonify({"error": "Invalid plan. Must be one of: free, pro, team"}), 400
-
-    update: dict = {"plan": plan}
-    if plan == "free":
-        update["credits_remaining"] = FREE_PLAN_CREDITS
-    else:
-        update["credits_remaining"] = -1
+    if plan != "free":
+        return jsonify({"error": "Only the free plan can be activated here. Upgrade to Pro through Stripe checkout."}), 400
 
     users_collection.update_one(
         {"_id": ObjectId(current_user.id)},
-        {"$set": update},
+        {"$set": {"plan": "free", "credits_remaining": FREE_PLAN_CREDITS}},
     )
     return jsonify(_user_payload())
 

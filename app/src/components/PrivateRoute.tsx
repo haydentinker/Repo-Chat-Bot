@@ -26,7 +26,6 @@ export default function PrivateRoute({ children }: Props) {
         }}
       >
         <Logo height={56} />
-        {/* Pulsing dots */}
         <div style={{ display: "flex", gap: 8 }}>
           {[0, 1, 2].map((i) => (
             <div

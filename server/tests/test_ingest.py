@@ -11,10 +11,6 @@ from unittest.mock import MagicMock, patch, call
 from langchain_core.documents import Document
 
 
-# ---------------------------------------------------------------------------
-# Utility functions — no mocking needed
-# ---------------------------------------------------------------------------
-
 from helpers.ingestRepo import hash_text, is_supported, gh_headers
 
 
@@ -33,9 +29,7 @@ class TestHashText:
 
 class TestIsSupported:
     @pytest.mark.parametrize("path", [
-        # Original set
         "README.md", "main.py", "index.js", "App.ts", "notes.txt", "package.json",
-        # Newly added
         "Component.jsx", "Component.tsx", "styles.css", "config.yaml", "config.yml",
         "Cargo.toml", "setup.ini", "script.sh", "main.go", "lib.rs",
         "Main.java", "main.c", "main.cpp", "main.h", "Program.cs",
@@ -68,10 +62,6 @@ class TestGhHeaders:
         headers = gh_headers("mytoken")
         assert "application/vnd.github" in headers["Accept"]
 
-
-# ---------------------------------------------------------------------------
-# ingest_repo logic — all external I/O is patched
-# ---------------------------------------------------------------------------
 
 PATCH_BASE = "helpers.ingestRepo"
 
@@ -142,7 +132,6 @@ class TestIngestRepo:
         mock_collections["users"].find_one.return_value = {"github_id": "user1"}
         mock_collections["repos"].find_one.return_value = {"last_commit_sha": "old_sha"}
 
-        # HEAD is a new SHA
         mock_github_api.get.side_effect = [
             _sha_response("new_sha"),
             _compare_response([{"filename": "image.png", "status": "modified"}]),

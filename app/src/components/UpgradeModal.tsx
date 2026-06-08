@@ -97,7 +97,6 @@ export default function UpgradeModal({
       }
     >
       <Stack gap="xl">
-        {/* Usage bar */}
         <Stack gap={6}>
           <Group justify="space-between">
             <Text size="sm" c="dimmed">Free plan usage</Text>
@@ -119,7 +118,6 @@ export default function UpgradeModal({
           )}
         </Stack>
 
-        {/* Plan cards */}
         <Stack gap="xs">
           <Title order={5} c="dimmed">Upgrade your plan</Title>
           <SimpleGrid cols={{ base: 1, xs: 2 }} spacing="md">

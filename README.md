@@ -1,4 +1,4 @@
-# Repo Chat Bot
+# Repository Augur
 
 A RAG-powered chat application that lets you have a conversation with any of your GitHub repositories. Ingest a repo, ask questions about the code, and get streamed AI responses that have read and indexed your entire codebase.
 

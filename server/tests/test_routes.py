@@ -10,10 +10,6 @@ from unittest.mock import MagicMock, patch
 from bson import ObjectId
 
 
-# ---------------------------------------------------------------------------
-# App fixture — creates a test client with a fresh app context
-# ---------------------------------------------------------------------------
-
 @pytest.fixture(scope="module")
 def client():
     with patch("helpers.ingestRepo.repos_collection"):
@@ -36,10 +32,6 @@ def _mock_user(github_id="user1", username="testuser"):
     return user
 
 
-# ---------------------------------------------------------------------------
-# /me
-# ---------------------------------------------------------------------------
-
 class TestMe:
     def test_unauthenticated_returns_401(self, client):
         c, app_module = client
@@ -48,7 +40,6 @@ class TestMe:
             resp = c.get("/me")
         assert resp.status_code == 401
         data = resp.get_json()
-        # before_request intercepts and returns {"error": "Not authenticated"}
         assert "error" in data or data.get("authenticated") is False
 
     def test_authenticated_returns_user(self, client):
@@ -66,10 +57,6 @@ class TestMe:
         assert data["username"] == "testuser"
         assert data["authenticated"] is True
 
-
-# ---------------------------------------------------------------------------
-# /ingest
-# ---------------------------------------------------------------------------
 
 class TestIngest:
     def test_missing_body_returns_400(self, client):
@@ -103,7 +90,6 @@ class TestIngest:
             patch("app.socketio") as mock_sio,
         ):
             mock_gh.token = {"access_token": "ghtoken"}
-            # No existing repo doc → new ingest, check plan
             mock_repos.find_one.return_value = None
             mock_repos.count_documents.return_value = 0
             mock_users.find_one.return_value = {"plan": "free"}
@@ -114,10 +100,6 @@ class TestIngest:
         assert resp.get_json()["status"] == "queued"
         mock_sio.start_background_task.assert_called_once()
 
-
-# ---------------------------------------------------------------------------
-# /user/loaded/repos
-# ---------------------------------------------------------------------------
 
 class TestUserLoadedRepos:
     def test_returns_repos_list(self, client):
@@ -141,10 +123,6 @@ class TestUserLoadedRepos:
         assert data[0]["repo_name"] == "owner/repo1"
 
 
-# ---------------------------------------------------------------------------
-# /logout
-# ---------------------------------------------------------------------------
-
 class TestLogout:
     def test_logout_calls_logout_user(self, client):
         c, app_module = client
@@ -160,10 +138,6 @@ class TestLogout:
         assert resp.status_code == 200
         mock_logout.assert_called_once()
 
-
-# ---------------------------------------------------------------------------
-# /user/threads (paginated)
-# ---------------------------------------------------------------------------
 
 class TestUserThreads:
     def _make_threads(self, n: int):
@@ -220,7 +194,6 @@ class TestUserThreads:
             mock_col.count_documents.return_value = 25
             mock_col.find.return_value.sort.return_value.skip.return_value.limit.return_value = iter([])
             c.get("/user/threads?repo_name=owner/repo&page=2&limit=10")
-            # skip should have been called with 10 (page 2, limit 10)
             mock_col.find.return_value.sort.return_value.skip.assert_called_with(10)
 
     def test_invalid_page_returns_400(self, client):
@@ -242,3 +215,139 @@ class TestUserThreads:
             mock_col.find.return_value.sort.return_value.skip.return_value.limit.return_value = iter([])
             c.get("/user/threads?repo_name=owner/repo&limit=999")
             mock_col.find.return_value.sort.return_value.skip.return_value.limit.assert_called_with(50)
+
+
+class TestActivatePlan:
+    def test_free_plan_activates(self, client):
+        c, app_module = client
+        user = _mock_user()
+        with (
+            patch("app.current_user", user),
+            patch("app.users_collection") as mock_users,
+        ):
+            mock_users.find_one.return_value = {"plan": "free", "credits_remaining": app_module.FREE_PLAN_CREDITS}
+            resp = c.post("/user/plan/activate", json={"plan": "free"})
+
+        assert resp.status_code == 200
+        update = mock_users.update_one.call_args[0][1]["$set"]
+        assert update["plan"] == "free"
+        assert update["credits_remaining"] == app_module.FREE_PLAN_CREDITS
+
+    def test_pro_plan_rejected(self, client):
+        c, app_module = client
+        user = _mock_user()
+        with (
+            patch("app.current_user", user),
+            patch("app.users_collection") as mock_users,
+        ):
+            resp = c.post("/user/plan/activate", json={"plan": "pro"})
+
+        assert resp.status_code == 400
+        mock_users.update_one.assert_not_called()
+
+    def test_team_plan_rejected(self, client):
+        c, app_module = client
+        user = _mock_user()
+        with (
+            patch("app.current_user", user),
+            patch("app.users_collection") as mock_users,
+        ):
+            resp = c.post("/user/plan/activate", json={"plan": "team"})
+
+        assert resp.status_code == 400
+        mock_users.update_one.assert_not_called()
+
+    def test_missing_plan_rejected(self, client):
+        c, app_module = client
+        user = _mock_user()
+        with (
+            patch("app.current_user", user),
+            patch("app.users_collection") as mock_users,
+        ):
+            resp = c.post("/user/plan/activate", json={})
+
+        assert resp.status_code == 400
+        mock_users.update_one.assert_not_called()
+
+
+def _stripe_event(event_type, obj):
+    event = MagicMock()
+    event.type = event_type
+    event.data.object = obj
+    return event
+
+
+class TestStripeWebhook:
+    def test_checkout_completed_upgrades_user(self, client):
+        c, app_module = client
+        obj = MagicMock()
+        obj.payment_status = "paid"
+        obj.metadata = {"github_id": "user1"}
+        obj.customer = "cus_123"
+        obj.subscription = "sub_123"
+        event = _stripe_event("checkout.session.completed", obj)
+
+        with (
+            patch("app.STRIPE_WEBHOOK_SECRET", "whsec_test"),
+            patch("app.stripe.Webhook.construct_event", return_value=event),
+            patch("app.users_collection") as mock_users,
+        ):
+            resp = c.post("/stripe/webhook", data="{}", headers={"Stripe-Signature": "sig"})
+
+        assert resp.status_code == 200
+        filt, update = mock_users.update_one.call_args[0]
+        assert filt == {"github_id": "user1"}
+        assert update["$set"]["plan"] == "pro"
+        assert update["$set"]["credits_remaining"] == -1
+        assert update["$set"]["stripe_customer_id"] == "cus_123"
+
+    def test_unpaid_checkout_does_not_upgrade(self, client):
+        c, app_module = client
+        obj = MagicMock()
+        obj.payment_status = "unpaid"
+        obj.metadata = {"github_id": "user1"}
+        event = _stripe_event("checkout.session.completed", obj)
+
+        with (
+            patch("app.STRIPE_WEBHOOK_SECRET", "whsec_test"),
+            patch("app.stripe.Webhook.construct_event", return_value=event),
+            patch("app.users_collection") as mock_users,
+        ):
+            resp = c.post("/stripe/webhook", data="{}", headers={"Stripe-Signature": "sig"})
+
+        assert resp.status_code == 200
+        mock_users.update_one.assert_not_called()
+
+    def test_subscription_deleted_downgrades_user(self, client):
+        c, app_module = client
+        obj = MagicMock()
+        obj.customer = "cus_123"
+        event = _stripe_event("customer.subscription.deleted", obj)
+
+        with (
+            patch("app.STRIPE_WEBHOOK_SECRET", "whsec_test"),
+            patch("app.stripe.Webhook.construct_event", return_value=event),
+            patch("app.users_collection") as mock_users,
+        ):
+            resp = c.post("/stripe/webhook", data="{}", headers={"Stripe-Signature": "sig"})
+
+        assert resp.status_code == 200
+        filt, update = mock_users.update_one.call_args[0]
+        assert filt == {"stripe_customer_id": "cus_123"}
+        assert update["$set"]["plan"] == "free"
+        assert update["$set"]["credits_remaining"] == app_module.FREE_PLAN_CREDITS
+
+    def test_missing_secret_returns_500(self, client):
+        c, app_module = client
+        with patch("app.STRIPE_WEBHOOK_SECRET", ""):
+            resp = c.post("/stripe/webhook", data="{}", headers={"Stripe-Signature": "sig"})
+        assert resp.status_code == 500
+
+    def test_invalid_payload_returns_400(self, client):
+        c, app_module = client
+        with (
+            patch("app.STRIPE_WEBHOOK_SECRET", "whsec_test"),
+            patch("app.stripe.Webhook.construct_event", side_effect=ValueError("bad payload")),
+        ):
+            resp = c.post("/stripe/webhook", data="not-json", headers={"Stripe-Signature": "sig"})
+        assert resp.status_code == 400
